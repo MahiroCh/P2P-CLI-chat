@@ -1,6 +1,4 @@
-use crate::message::IpcMessage;
-use anyhow::Result;
-use serde_json;
+use crate::types::IpcMessage;
 use std::io::{Read, Write};
 
 const SOCKET_PATH: &str = "/tmp/chat_daemon.sock";
@@ -9,8 +7,7 @@ pub fn socket_path() -> &'static str {
   SOCKET_PATH
 }
 
-/// Send a message over a socket
-pub fn send_message<W: Write>(writer: &mut W, msg: &IpcMessage) -> Result<()> {
+pub fn send_message<W: Write>(writer: &mut W, msg: &IpcMessage) -> Result<(), Box<dyn std::error::Error>> {
   let json = serde_json::to_string(msg)?;
   let data = format!("{}\n", json);
   writer.write_all(data.as_bytes())?;
@@ -18,8 +15,7 @@ pub fn send_message<W: Write>(writer: &mut W, msg: &IpcMessage) -> Result<()> {
   Ok(())
 }
 
-/// Receive a message from a socket
-pub fn receive_message<R: Read>(reader: &mut R) -> Result<Option<IpcMessage>> {
+pub fn receive_message<R: Read>(reader: &mut R) -> Result<Option<IpcMessage>, Box<dyn std::error::Error>> {
   let mut buffer = [0u8; 8192];
   let n = reader.read(&mut buffer)?;
 
@@ -38,7 +34,6 @@ pub fn receive_message<R: Read>(reader: &mut R) -> Result<Option<IpcMessage>> {
   Ok(Some(msg))
 }
 
-/// Stream-based message receiver for handling multiple messages
 pub struct MessageStream<R: Read> {
   reader: R,
   buffer: String,
@@ -52,9 +47,8 @@ impl<R: Read> MessageStream<R> {
     }
   }
 
-  pub fn next_message(&mut self) -> Result<Option<IpcMessage>> {
+  pub fn next_message(&mut self) -> Result<Option<IpcMessage>, Box<dyn std::error::Error>> {
     loop {
-      // Try to parse a complete line from buffer
       if let Some(newline_pos) = self.buffer.find('\n') {
         let line = self.buffer.drain(..=newline_pos).collect::<String>();
         let trimmed = line.trim();
@@ -64,12 +58,10 @@ impl<R: Read> MessageStream<R> {
         }
       }
 
-      // Need more data
       let mut chunk = [0u8; 4096];
       let n = self.reader.read(&mut chunk)?;
 
       if n == 0 {
-        // EOF
         if self.buffer.is_empty() {
           return Ok(None);
         }
