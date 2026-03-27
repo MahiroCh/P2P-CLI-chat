@@ -3,20 +3,15 @@ name = "p2p_cli_chat"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "chat-daemon"
-path = "src/daemon_main.rs"
-
-[[bin]]
-name = "chat-cli"
-path = "src/cli_main.rs"
+name = "p2pchat"
+path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 iroh = "0.96.0"
+clap = { version = "4.6.0", features = ["derive"] }
 
 [profile.release]
-opt-level = 3
 lto = true
