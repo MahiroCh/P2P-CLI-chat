@@ -1,5 +1,7 @@
 #![allow(unused)] // TODO: Remove this when the code is fully implemented
 
+mod service;
+
 use std::process::ExitCode;
 use rustyline::error::ReadlineError as RstlnReadlineErr;
 use clap::Parser;
@@ -22,7 +24,25 @@ fn main() -> ExitCode {
 
   match cmd.command {
     CmdLineCommand::Interactive => { interactive_mode(); }, // TDOO: Handle the exit code and errors more gracefully
-    CmdLineCommand::Daemon { command } => { }, // TODO: Implement daemon commands
+    CmdLineCommand::Daemon { command } => {
+      match command {
+        DaemonCommand::Start => {
+          if let Err(err) = service::start_daemon() {
+            eprintln!("daemon start failed: {err}");
+            return AppExitCode::FAILURE.into();
+          }
+        }
+        DaemonCommand::Stop | DaemonCommand::Restart | DaemonCommand::Status => {
+          println!("daemon command not implemented yet");
+        }
+      }
+    }, // TODO: Implement daemon commands
+    CmdLineCommand::DaemonInternal { token_fd } => {
+      if let Err(err) = service::run_daemon_internal(token_fd) {
+        eprintln!("daemon internal start failed: {err}");
+        return AppExitCode::FAILURE.into();
+      }
+    },
     CmdLineCommand::PeerCommand(peer_cmd) => { handle_peer_command(&peer_cmd); }, // TODO: Handle the exit code and errors more gracefully
   }
 
@@ -80,6 +100,11 @@ enum CmdLineCommand {
   },
   /// Start interactive terminal session
   Interactive,
+  #[command(name = "__daemon-internal", hide = true)]
+  DaemonInternal {
+    #[arg(long = "token-fd", hide = true)]
+    token_fd: i32,
+  },
 }
 
 #[derive(clap::Subcommand)]
