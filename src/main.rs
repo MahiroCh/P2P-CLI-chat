@@ -1,4 +1,8 @@
+// TODO: Implement normal error handling
+
 #![allow(unused)] // TODO: Remove this when the code is fully implemented
+
+mod service;
 
 use std::process::ExitCode;
 use rustyline::error::ReadlineError as RstlnReadlineErr;
@@ -20,10 +24,27 @@ fn main() -> ExitCode {
     },
   };
 
-  match cmd.command {
-    CmdLineCommand::Interactive => { interactive_mode(); }, // TDOO: Handle the exit code and errors more gracefully
-    CmdLineCommand::Daemon { command } => { }, // TODO: Implement daemon commands
-    CmdLineCommand::PeerCommand(peer_cmd) => { handle_peer_command(&peer_cmd); }, // TODO: Handle the exit code and errors more gracefully
+  match cmd.command { // TDOO: Handle the exit code and errors more gracefully
+    CmdLineCommand::Interactive => { interactive_mode(); }, // TODO: Implement protection against entering REPL without a running daemon --- IGNORE ---
+
+    CmdLineCommand::PeerCommand(peer_cmd) => { handle_peer_command(&peer_cmd); }, 
+
+    CmdLineCommand::Daemon { command } => {
+      match command {
+        DaemonCommand::Start { initialize } => {
+          if initialize { service::daemon(); } 
+          else { service::start_daemon(); }
+        },  
+        
+        DaemonCommand::Connect => { service::connect_daemon(); },
+
+        DaemonCommand::Stop => { service::stop_daemon(); },
+
+        DaemonCommand::Restart => { service::restart_daemon(); },
+  
+        DaemonCommand::Status => { service::daemon_status(); }
+      }
+    }
   }
 
   AppExitCode::SUCCESS.into()
@@ -84,11 +105,16 @@ enum CmdLineCommand {
 
 #[derive(clap::Subcommand)]
 enum DaemonCommand {
-  /// Start the daemon
-  Start,
+  /// Start the daemon and connect to it
+  Start {
+    #[arg(long = "initialize", hide = true)]
+    initialize: bool,
+  },
+  /// Connect to an already running daemon
+  Connect,
   /// Stop the daemon
   Stop,
-  /// Restart the daemon
+  /// Restart the daemon and connect to it
   Restart,
   /// Get daemon status
   Status,
@@ -153,14 +179,14 @@ fn interactive_mode() -> AppExitCode{
         let intrct_cli = match InteractiveCmdLine::try_parse_from(cmdline_args) {
           Ok(parsed) => parsed,
           Err(e) => {
-            let _ = e.print(); // TODO: Handle errors from print() gracefully
+            let _ = e.print(); // TODO: Handle errors
             continue;
           },
         };
 
         match intrct_cli.command {
           InteractiveCmdLineCommand::Quit => {
-            println!("Exited interactive mode!");
+            println!("Exited interactive mode");
             return AppExitCode::SUCCESS;
           },
           InteractiveCmdLineCommand::PeerCommand(peer_cmd) => {
@@ -184,7 +210,7 @@ fn interactive_mode() -> AppExitCode{
 // Helpers
 // ========================================================================
 
-fn handle_peer_command(cmd: &PeerCommand) { // TODO: Impelement error handling
+fn handle_peer_command(cmd: &PeerCommand) {
   match cmd {
     PeerCommand::Connect { peer_id } => {
       println!("Connecting to peer: {}", peer_id);
