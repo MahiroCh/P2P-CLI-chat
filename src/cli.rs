@@ -1,74 +1,99 @@
-// TODO: Implement normal error handling
+mod repl;
 
-mod cmdline;
+use tokio::net::UnixStream as TokioUnixStream;
 
-use rustyline::{Cmd, error::ReadlineError as RstlnReadlineErr};
-
-pub use cmdline::Cmdline; // for main.rs
-use cmdline::*;
 use crate::daemon;
+use p2p_chat::{
+  socket,
+  protocol::*
+};
 
-pub fn process_cmdline(cmd: Cmdline) { // TODO: Should return Result<...>
-  match cmd.command { // TODO: Handle the exit code and errors more gracefully
-    Command::Interactive => { 
-      if daemon::daemon_status() {
-        let _ = interactive_cli();
-      } else {
-        println!("Daemon is not running. Please start the daemon first with `daemon start` command.");
-        // TODO: Return some error
+// ========================================================================
+// Driver code
+// ========================================================================
+
+pub fn parser() {
+  use clap::Parser;
+  let cmdline = match Cli::try_parse() {
+    Ok(cmd) => cmd,
+    Err(err) => {
+      if let Err(io_err) = err.print() {
+        eprintln!("I/O error: {io_err}");
       }
+      return;
     },
+  };
+  process_cmdline(cmdline);
+}
 
-    Command::PeerCommand(peer_cmd) => {  }, // TODO: Implement
+fn process_cmdline(cmdline: Cli) {
+  if cmdline.init_internal {
+    daemon::run();
+    return;
+  }
 
-    Command::Daemon { command } => {
-      match command {
-        DaemonCmd::Start { initialize } => {
-          if initialize { daemon::daemon(); } 
-          else { daemon::start_daemon(); }
-        },
-        
-        DaemonCmd::Stop => { daemon::stop_daemon(); },
+  let Some(cmd) = cmdline.command else {
+    unreachable!(
+      "Invalid command-line arguments: \
+       no command provided and internal init flag is not set"
+    )
+  };
 
-        DaemonCmd::Status => { daemon::daemon_status(); }
-      }
+  match cmd {
+    Command::Daemon { subcmd } => handle_daemon_control_cmd(subcmd),
+    Command::Peer { subcmd } => {
+      let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+      tokio_rt.block_on(handle_peer_cmd(subcmd));
+    }
+    Command::Interactive => {
+      let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+      tokio_rt.block_on(repl::run());
     }
   }
 }
 
-fn interactive_cli() { // Should return Result<...>
-  let mut rl = rustyline::DefaultEditor::new().unwrap();
+// ========================================================================
+// Command handlers
+// ========================================================================
 
-  loop {
-    let readline = rl.readline("> ");
-    match readline {
-      Ok(cmdline) => {
-        use clap::Parser;
-        let cmdline_args = shlex::split(&cmdline).expect("shlex parsing failed in interactive mode");
-        let intrct_cli = match InteractiveCmdline::try_parse_from(cmdline_args) {
-          Ok(parsed) => parsed,
-          Err(e) => {
-            let _ = e.print(); // TODO: Handle errors
-            continue;
-          },
-        };
-
-        match intrct_cli.command {
-          InteractiveCommand::Quit => {
-            println!("Exited interactive mode");
-            // TODO: Return success
-          },
-          InteractiveCommand::PeerCommand(peer_cmd) => { } // TODO: Implement
-        }
-      },
-      Err(RstlnReadlineErr::Interrupted) => {
-        println!("\nUse 'quit' to exit");
-        continue;
-      },
-      Err(err) => {
-        eprintln!("Error: {:?}\nDying", err); // TODO: Debug representation of an error may not be user-friendly, consider implementing Display for better error messages
-        // TODO: Return failure
-      }
-    }
+async fn handle_peer_cmd(cmd: PeerCmd) {
+  if let None = daemon::control::status() {
+    println!(
+      "Daemon is not running\n\
+        Please start the daemon first with `daemon start` command"
+    );
+    return;
   }
+
+  let mut socket = socket::connect_from_cli(&daemon::control::socket_file_path()).await.unwrap(); // TODO: unwrap()?
+  
+  let response = _test_send(&mut socket, &cmd).await;
+  println!("Daemon received this command: {}", response);
+}
+
+fn handle_daemon_control_cmd(cmd: DaemonCmd) {
+  match cmd {
+    DaemonCmd::Stop => daemon::control::destroy(),
+    DaemonCmd::Start => daemon::control::create(),
+    DaemonCmd::Status => match daemon::control::status() {
+      Some(pid) => println!("Daemon is running with PID {}", pid),
+      None => println!("Daemon is not running"),
+    },
+  }
+}
+
+
+
+
+
+/* TEMP HELPER */
+async fn _test_send(socket: &mut TokioUnixStream, cmd: &PeerCmd) -> String {
+  let serded_cmd = serde_json::to_string(cmd)
+    .expect("failed to serialize command");
+
+  socket::write_data(socket, &serded_cmd).await
+    .expect("failed to write message to socket");
+
+  socket::read_data(socket).await
+    .expect("failed to read message from socket")
 }

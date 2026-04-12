@@ -1,11 +1,5 @@
-// TODO: Implement normal error handling
-
-#![allow(unused)] // TODO: Remove this when the code is fully implemented
-
 mod cli;
 mod daemon;
-
-use std::process::ExitCode;
 
 // ========================================================================
 // Custom ExitCode
@@ -18,6 +12,7 @@ enum AppExitCode {
   PARSEFAILURE, // exit code for clap-related errors
 }
 
+use std::process::ExitCode;
 impl From<AppExitCode> for ExitCode {
   fn from(code: AppExitCode) -> Self {
     match code {
@@ -33,19 +28,6 @@ impl From<AppExitCode> for ExitCode {
 // ========================================================================
 
 fn main() -> ExitCode {
-  use clap::Parser;
-  let cmd = match cli::Cmdline::try_parse() {
-    Ok(parsed) => parsed,
-    Err(e) => {
-      if let Err(io_err) = e.print() {
-        eprintln!("I/O error: {io_err}");
-        return AppExitCode::FAILURE.into();
-      }
-      return AppExitCode::PARSEFAILURE.into();
-    },
-  };
-
-  cli::process_cmdline(cmd);
-
+  cli::parser();
   AppExitCode::SUCCESS.into()
 }
