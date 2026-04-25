@@ -1,15 +1,14 @@
 mod cli;
 mod daemon;
 
-// ========================================================================
-// Custom ExitCode
-// ========================================================================
+// Custom ExitCode.
 
 #[derive(Debug)]
 enum AppExitCode {
   SUCCESS,
   FAILURE,
-  PARSEFAILURE, // exit code for clap-related errors
+  // Exit code for clap-related errors.
+  PARSEFAILURE,
 }
 
 use std::process::ExitCode;
@@ -23,11 +22,9 @@ impl From<AppExitCode> for ExitCode {
   }
 }
 
-// ========================================================================
-// Driver code
-// ========================================================================
+// Driver code.
 
 fn main() -> ExitCode {
-  cli::parser();
+  cli::parse_cmdline();
   AppExitCode::SUCCESS.into()
 }

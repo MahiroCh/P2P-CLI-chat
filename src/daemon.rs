@@ -1,15 +1,17 @@
+//! Daemon process for p2p chat application.
+
 pub mod control;
 
-use p2p_chat::{socket, pid};
+use p2p_chat::{
+	pid,
+	socket,
+};
 
 use tokio::{
 	signal::unix::{signal as tokio_signal, SignalKind}
 };
 
-
-// ========================================================================
-// Shutdown handling
-// ========================================================================
+// Shutdown handling.
 
 struct DaemonCleanupGuard;
 impl Drop for DaemonCleanupGuard {
@@ -19,9 +21,7 @@ impl Drop for DaemonCleanupGuard {
 	}
 }
 
-// ========================================================================
-// Driver code
-// ========================================================================
+// Driver code.
 
 pub fn run() {
 	let _guard = DaemonCleanupGuard;
@@ -30,16 +30,15 @@ pub fn run() {
 	pid::create_file(&pid_fp);
 	pid::write_to_file(&pid_fp, pid::this_proc_pid());
 
-	let socket_fp = control::socket_file_path();
-
 	let rt = tokio::runtime::Runtime::new().unwrap();
 	rt.block_on(async {
-		let socket_listener = socket::create_file(&socket_fp);
-		
 		let mut sigterm = tokio_signal(SignalKind::terminate())
 			.expect("failed to install Tokio SIGTERM handler");
+		let socket_fp = control::socket_file_path();
+		let socket_listener = socket::create_file(&socket_fp);
 
-		'daemon_loop: loop { // TODO: Make this truly asynchronous, e.g. by spawning a task and so on
+		// TODO: Make this truly asynchronous, e.g. by spawning a task and so on.
+		'daemon_loop: loop {
 			tokio::select! {
 				_ = sigterm.recv() => {
 					println!("Received SIGTERM; shutting down daemon");

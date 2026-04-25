@@ -1,3 +1,4 @@
+//! Socket file management.
 
 use std::{
 	fs, path::PathBuf
@@ -7,6 +8,8 @@ use tokio::{
 	net::{UnixListener as TokioUnixListener, UnixStream as TokioUnixStream},
 };
 
+// Define a maximum frame size for socket communication between CLI and Daemon
+// to prevent potential DoS attacks or resource exhaustion.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 pub fn create_file(path: &PathBuf) -> TokioUnixListener {
@@ -23,7 +26,6 @@ pub fn create_file(path: &PathBuf) -> TokioUnixListener {
 	listener
 }
 
-
 pub fn remove_file(path: &PathBuf) {
 	match fs::remove_file(path) {
 		Ok(()) => {},
@@ -34,11 +36,15 @@ pub fn remove_file(path: &PathBuf) {
 	if let Some(parent) = path.parent() {
 		match fs::remove_dir(parent) {
 			Ok(()) => {},
-			Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
+			Err(err) 
+				if err.kind() == std::io::ErrorKind::NotFound
+        || err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {},
 			Err(_) => {
-				// TODO: Maybe do sth with the fact that:
-				// directory might not be empty or have other permission issues.
-				// For now, silently ignore since the PID file is already removed.
+				todo!(
+					"failed to remove socket file parent directory\n\
+					 Something unexpected happened, and if it is permission issue, \
+           consider implementing some behavior for this case."
+				);
 			}
 		}
 	}
@@ -48,7 +54,12 @@ pub async fn connect_from_cli(path: &PathBuf) -> Option<TokioUnixStream> {
 	match TokioUnixStream::connect(path).await {
 		Ok(socket) => Some(socket),
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-		Err(err) => panic!("failed to connect to daemon socket: {}", err),
+		Err(err) => 
+			todo!(
+				"failed to connect to socket file: {}\n\
+				This could be because the daemon is not running, or there are permission \
+				issues with the socket file.", err
+			)
 	}
 }
 
@@ -69,6 +80,7 @@ pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<(
 				)
 			);
 		},
+		// TODO: Handle errors.
 		Err(_) => panic!("failed to write message length to socket"),
 	}
 	
@@ -85,13 +97,15 @@ pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<(
 				)
 			);
 		},
+		// TODO: Handle errors.
 		Err(_) => panic!("failed to write message to socket"),
 	}
 
 	Ok(())
 }
 
-pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String, std::io::Error> { // TODO: Reading methods are not cancel safe in here
+// TODO: Reading methods are not cancel safe in here.
+pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String, std::io::Error> {
 		let msg_byte_len = match socket.read_u32().await {
 			Ok(len) => len,
 			Err(err) 
@@ -106,6 +120,7 @@ pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String, std::io::
 					)
 				);
 			},
+			// TODO: Handle errors.
 			Err(_) => panic!("failed to read message length from socket"),
 		};
 
@@ -131,6 +146,7 @@ pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String, std::io::
 					)
 				);
 			},
+			// TODO: Handle errors.
 			Err(_) => panic!("failed to read message from socket"),
 		}
 

@@ -1,102 +1,86 @@
+//! REPL mode for p2p chat.
+
 use tokio::net::UnixStream as TokioUnixStream;
 use rustyline::error::ReadlineError as RstlnReadlineErr;
 
 use crate::daemon;
 use p2p_chat::{
   socket,
-  protocol::*
+  cli_schema::*
 };
 
-enum ReplAction {
-  Continue,
-  Quit,
-}
-
-// ========================================================================
-// Driver code
-// ========================================================================
+// Driver code.
 
 pub async fn run() {
-  if let None = daemon::control::status() {
-    println!(
-      "Daemon is not running\n\
-        Please start the daemon first with `daemon start` command"
-    );
-    return;
-  }
-  
   let mut repl_engine = rustyline::DefaultEditor::new().unwrap();
 
-  let mut socket = socket::connect_from_cli(&daemon::control::socket_file_path()).await.unwrap(); // TODO: unwrap()?
+  // TODO: unwrap()?
+  let mut socket = socket::connect_from_cli(&daemon::control::socket_file_path()).await.unwrap();
   
   loop {
     let readline = repl_engine.readline("> ");
     match readline {
-      Ok(raw_cmd) => {
-        match process_cmd(&mut socket, raw_cmd).await { // TODO: Add real asynchrony
+      Ok(raw_cmdline) => {
+        // TODO: Add real asynchrony.
+        match parse_cmdline(&mut socket, raw_cmdline).await {
           ReplAction::Quit => return,
           ReplAction::Continue => continue,
         }
       }
       Err(RstlnReadlineErr::Interrupted) => {
-        println!("Use 'quit' to exit");
+        println!("Use 'quit' command to exit");
       },
       
       Err(err) => {
-        eprintln!("{:?}\nExiting repl mode...", err); // TODO: Debug representation of an error may not be user-friendly, consider implementing Display
+        // TODO: Debug representation of an error may not be user-friendly, consider implementing Display.
+        eprintln!("{:?}\nExiting repl mode...", err);
         return;
       }
     }
   }
 }
 
-// ========================================================================
-// REPL command processing
-// ========================================================================
+enum ReplAction {
+  Continue,
+  Quit,
+}
 
-async fn process_cmd(socket: &mut TokioUnixStream, raw_cmd: String) -> ReplAction {
+async fn parse_cmdline(socket: &mut TokioUnixStream, raw_cmdline: String) -> ReplAction {
   use clap::Parser;
-  let shlexed_cmd = match shlex::split(&raw_cmd) {
+  let shlexed_cmd = match shlex::split(&raw_cmdline) {
     Some(cmd) => cmd,
     None => {
-      eprintln!("Invalid command syntax: check quotes and escaping");
+      // TODO: Consider maybe just printing clap's help message instead?
+      eprintln!("shlex couldn't parse the command line: check quotes and escaping");
       return ReplAction::Continue;
     }
   };
-  let cmd = match InteractiveCommand::try_parse_from(shlexed_cmd) {
+  let cmdline = match InteractiveCommand::try_parse_from(shlexed_cmd) {
     Ok(c) => c,
     Err(e) => {
-      let _ = e.print(); // TODO: Handle errors
+      // TODO: Handle errors.
+      let _ = e.print();
       return ReplAction::Continue;
     },
   };
 
-  match cmd {
+  process_cmdline(socket, cmdline).await
+}
+
+async fn process_cmdline(socket: &mut TokioUnixStream, cmdline: InteractiveCommand) -> ReplAction {
+  match cmdline {
     InteractiveCommand::Quit => {
       println!("Exiting repl mode...");
       ReplAction::Quit
     },
     InteractiveCommand::Peer(peer_cmd) => {
-      let response = _test_send(socket, &peer_cmd).await;
-      println!("Daemon received this command: {}", response);
-      
+      handle_peer_cmd(socket, peer_cmd).await;
       ReplAction::Continue
     }
   }
 }
 
-
-
-
-
-/* TEMP HELPER */
-async fn _test_send(socket: &mut TokioUnixStream, cmd: &PeerCmd) -> String {
-  let serded_cmd = serde_json::to_string(cmd)
-    .expect("failed to serialize command");
-
-  socket::write_data(socket, &serded_cmd).await
-    .expect("failed to write message to socket");
-
-  socket::read_data(socket).await
-    .expect("failed to read message from socket")
+async fn handle_peer_cmd(socket: &mut TokioUnixStream, cmd: PeerCmd) {
+  let response = super::_test_send(socket, &cmd).await;
+  println!("Daemon response: {response}");
 }

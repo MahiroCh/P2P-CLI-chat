@@ -1,36 +1,58 @@
+//! Daemon control module: responsible for managing the lifecycle of the daemon 
+//! process, including starting, stopping, and checking its status.
+
+// NOTE: Consider implementing some way for daemon to kill itself if it 
+// NOTE: idles without CLI connection for too long to avoid dangling process.
+// NOTE: (which is not really bad as I know, but still...)
+
 use p2p_chat::{
-	protocol::{INTERNAL_DAEMON_INIT_FLAG, DAEMON_NAME},
+	cli_schema::{INTERNAL_DAEMON_INIT_FLAG, DAEMON_NAME},
 	socket,
 	pid
 };
 
-use std::{fs, path::PathBuf};
+use std::{
+	fs, 
+	path::PathBuf
+};
 use nix::{
 	sys::signal as nix_signal,
 };
 
+// Driver code.
+
 pub fn create() {
+	// TODO: If PID exists, it doesn't necessarily mean the process is 
+	// TODO: our p2p-chat daemon. Some other proces might have taken the PID.
+	// TODO: Implement this check.
+	// NOTE: Stronger design for the future: pair this with a lockfile or Unix socket.
 	if let Some(pid) = status() {
 		println!("Daemon is already running with PID {}; aborting", pid);
 		return;
-	} /* TODO: If PID exists, it doesn't necessarily 
-	mean the process is precisely our daemon. Implement this check. 
-	Stronger long-term design for the future: pair this with a lockfile or Unix socket. */ 
+	} 
 
+	// Get current binary path to spawn the same binary with a hidden flag 
+	// that triggers the real daemon initialization code.
 	let exe = std::env::current_exe()
 		.expect("failed to get current executable path");
 
+	// Configure command to run the binary with the hidden flag. Redirect stdio to null 
+	// for daemon.
+	// NOTE: Consider later adding an option to redirect daemon logs to a file or
+	// NOTE: another terminal window.
 	let mut command = std::process::Command::new(exe);
 	command
-		.arg(format!("--{}", INTERNAL_DAEMON_INIT_FLAG)) // trigger hidden flag to call real daemon
+	   // Trigger hidden flag to call real daemon.
+		.arg(format!("--{}", INTERNAL_DAEMON_INIT_FLAG))
 		.stdin(std::process::Stdio::null())
 		.stdout(std::process::Stdio::null())
 		.stderr(std::process::Stdio::null());
 	
-	/* Detach from controlling terminal using standard new session strategy. std::process's 
-	implementation of setsid() is still nightly-only feature, so use nix crate's alternative.*/
+	// Detach from controlling terminal using standard new session strategy. 
+	// std::process's implementation of setsid() is still nightly-only feature, 
+	// so I use nix crate's alternative.
 	unsafe {
-		use std::os::unix::process::CommandExt; // for pre_exec()
+		use std::os::unix::process::CommandExt;
 		command.pre_exec(|| {
 			nix::unistd::setsid().map_err(
 				|e: nix::errno::Errno| 
@@ -40,10 +62,15 @@ pub fn create() {
 		});
 	}
 
+	// Run the spawn command.
 	let child = command.spawn()
 		.expect("failed to spawn daemon process");
 
-	println!("Daemon started with pid {}", child.id()); // TODO: Consider instead returning PID from this func
+	// TODO: Consider implementing some waiting strategy for the daemon to be 
+	// TODO: fully initialized, e.g. by waiting for the PID file or socket file to 
+	// TODO: be created, or something else.
+
+	println!("Daemon started with pid {}", child.id());
 }
 
 pub fn destroy() {
@@ -68,15 +95,19 @@ pub fn destroy() {
 			println!("Permission denied while stopping daemon with PID {}", pid);
 			return;
 		},
-		Err(_) => { // TODO: Handle error brought by Err(_)
+		// TODO: Handle error brought by Err(_)
+		Err(_) => {
 			println!("Failed to stop daemon with PID {}", pid);
 			return;
 		}
 	}
+
 	// TODO: Implement waiting for process termination with timeout and forced kill 
-	// if it doesn't terminate gracefully.
+	// TODO: if it doesn't terminate gracefully.
 }
 
+// Check if daemon is running and return its PID if it is. 
+// Also performs cleanup of stale PID files and sockets.
 pub fn status() -> Option<i32> {
 	let pid_fp = pid_file_path();
 	let mut pid: Option<i32> = None;
@@ -99,8 +130,14 @@ pub fn status() -> Option<i32> {
 			}
 		},
 		false => {
-			if let Some(_) = pid { // TODO
-				println!("Daemon is running, but socket file is not found; TODO: This is bad so do sth about it");
+			if let Some(_) = pid {
+				eprintln!("");
+				todo!(
+					"daemon is running, but socket file is not found\n\
+					 Consider implementing some recovery strategy for this case, \
+					 e.g. recreate socket file or something. May happen that the process \
+					 detected is not daemon at all, but some other process with the same PID"
+				);
 			}
 		}
 	}
@@ -108,9 +145,7 @@ pub fn status() -> Option<i32> {
 	pid
 }
 
-// ========================================================================
-// Helpers
-// ========================================================================
+// Helpers.
 
 fn daemon_state_dir() -> PathBuf {
 	if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
@@ -137,15 +172,24 @@ pub fn pid_file_path() -> PathBuf {
 	daemon_state_dir().join(format!("{DAEMON_NAME}.pid"))
 }
 
+// TODO: This should be taken in account: if sending a null signal fails with 
+// TODO: the error ESRCH, then we know the process doesn’t exist. If the call fails 
+// TODO: with the error EPERM (meaning the process exists, but we don’t have permission 
+// TODO: to send a signal to it) or succeeds (meaning we do have permission to send
+// TODO: a signal to the process), then we know that the process exists.
 fn is_process_alive(pid: nix::unistd::Pid) -> bool {
 	match nix_signal::kill(pid, None) {
 		Ok(()) => true,
-		Err(nix::errno::Errno::EPERM) => true,
+		// Process exists, but we don’t have permission to send a signal to it.
+		Err(nix::errno::Errno::EPERM) => 
+			todo!(
+				"Daemon process with PID {} exists but we don't have permission to 
+				 signal it. Consider implementing some strategy for this case, e.g. 
+				 checking if it's actually our daemon process or not", pid
+			),
+		// Process doesn't exist.
 		Err(nix::errno::Errno::ESRCH) => false,
+		// TODO: Handle error brought by Err(_).
 		Err(_) => false,
-	} /* TODO: This should be taken in account: If sending a null signal fails with the error ESRCH, 
-	then we know the process doesn’t exist. If the call fails with the error EPERM 
-	(meaning the process exists, but we don’t have permission to send a signal to it) 
-	or succeeds (meaning we do have permission to send a signal to the process), 
-	then we know that the process exists. */
+	}
 }

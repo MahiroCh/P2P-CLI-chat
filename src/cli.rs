@@ -1,3 +1,8 @@
+//! Command-line interface for the P2P chat application.
+//! 
+//! This module defines parsing of P2P-chat command-line arguments (including REPL mode), 
+//! and controlling the daemon process lifecycle.
+
 mod repl;
 
 use tokio::net::UnixStream as TokioUnixStream;
@@ -5,14 +10,12 @@ use tokio::net::UnixStream as TokioUnixStream;
 use crate::daemon;
 use p2p_chat::{
   socket,
-  protocol::*
+  cli_schema::*
 };
 
-// ========================================================================
-// Driver code
-// ========================================================================
+// Driver code.
 
-pub fn parser() {
+pub fn parse_cmdline() {
   use clap::Parser;
   let cmdline = match Cli::try_parse() {
     Ok(cmd) => cmd,
@@ -27,54 +30,42 @@ pub fn parser() {
 }
 
 fn process_cmdline(cmdline: Cli) {
+  // Runs the daemon itself if INTERNAL_DAEMON_INIT_FLAG hidden flag is set by 
+  // daemon::control::create() function.
   if cmdline.init_internal {
     daemon::run();
     return;
   }
 
-  let Some(cmd) = cmdline.command else {
-    unreachable!(
-      "Invalid command-line arguments: \
-       no command provided and internal init flag is not set"
-    )
-  };
-
-  match cmd {
-    Command::Daemon { subcmd } => handle_daemon_control_cmd(subcmd),
-    Command::Peer { subcmd } => {
-      let tokio_rt = tokio::runtime::Runtime::new().unwrap();
-      tokio_rt.block_on(handle_peer_cmd(subcmd));
+  // If the flag is not set, command is required to be present by the cli_schema,
+  // so we can safely unwrap it here.
+  let cmd = cmdline.command.unwrap();
+  if let Command::Daemon {subcmd} = cmd {
+    handle_daemon_control_cmd(subcmd);
+  } else {
+    if let None = daemon::control::status() {
+      println!(
+        "Daemon is not running\n\
+         Please start the daemon first with `daemon start` command"
+      );
+      return;
     }
-    Command::Interactive => {
-      let tokio_rt = tokio::runtime::Runtime::new().unwrap();
-      tokio_rt.block_on(repl::run());
+    let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+    match cmd {
+      // NOTE: Maybe I will change the way I use tokio runtime later.
+      Command::Peer { subcmd } => tokio_rt.block_on(handle_peer_cmd(subcmd)),
+      Command::Interactive => tokio_rt.block_on(handle_repl_cmd()),
+      _ => unreachable!()
     }
   }
 }
 
-// ========================================================================
-// Command handlers
-// ========================================================================
-
-async fn handle_peer_cmd(cmd: PeerCmd) {
-  if let None = daemon::control::status() {
-    println!(
-      "Daemon is not running\n\
-        Please start the daemon first with `daemon start` command"
-    );
-    return;
-  }
-
-  let mut socket = socket::connect_from_cli(&daemon::control::socket_file_path()).await.unwrap(); // TODO: unwrap()?
-  
-  let response = _test_send(&mut socket, &cmd).await;
-  println!("Daemon received this command: {}", response);
-}
+// Command handlers.
 
 fn handle_daemon_control_cmd(cmd: DaemonCmd) {
   match cmd {
-    DaemonCmd::Stop => daemon::control::destroy(),
     DaemonCmd::Start => daemon::control::create(),
+    DaemonCmd::Stop => daemon::control::destroy(),
     DaemonCmd::Status => match daemon::control::status() {
       Some(pid) => println!("Daemon is running with PID {}", pid),
       None => println!("Daemon is not running"),
@@ -82,11 +73,22 @@ fn handle_daemon_control_cmd(cmd: DaemonCmd) {
   }
 }
 
+async fn handle_peer_cmd(cmd: PeerCmd) {
+  // TODO: unwrap()?
+  let mut socket = socket::connect_from_cli(&daemon::control::socket_file_path()).await.unwrap();
+  
+  // NOTE: Temporary code for testing the socket communication, to be replaced 
+  // NOTE: with real command processing logic later.
+  let response = _test_send(&mut socket, &cmd).await;
+  println!("Daemon response: {response}");
+}
 
+async fn handle_repl_cmd() {
+  repl::run().await;
+}
 
-
-
-/* TEMP HELPER */
+// NOTE: Temporary function for testing the socket communication,
+// NOTE: to be replaced with real command processing logic later.
 async fn _test_send(socket: &mut TokioUnixStream, cmd: &PeerCmd) -> String {
   let serded_cmd = serde_json::to_string(cmd)
     .expect("failed to serialize command");

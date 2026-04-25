@@ -1,14 +1,16 @@
+//! Command-line interface and schemas for the peer-to-peer chat application.
+
 use clap::{Parser, Subcommand};
 use serde::{Serialize, Deserialize};
 
 pub const INTERNAL_DAEMON_INIT_FLAG: &str = "initializedaemoninternalcmd";
 pub const DAEMON_NAME: &str = "daemon";
 
-/* Command-line arguments for the main application: */
+// Main application command-line arguments.
 
 #[derive(Parser)]
 #[command(
-  about = "Simple peer‑to‑peer chat.\n\n\
+  about = "Simple peer-to-peer chat.\n\n\
           Before establishing connections, launch daemon first with `daemon` set of commands.\n\
           Use subcommands like `connect`, `send`, and `peers` to manage peers and messages.\n\
           You can also start an interactive terminal session with the `interactive` command, \
@@ -18,6 +20,10 @@ pub const DAEMON_NAME: &str = "daemon";
   override_usage = "p2pchat <COMMAND>"
 )]
 pub struct Cli {
+  // INTERNAL_DAEMON_INIT_FLAG is not intended to be seen and used by the user.
+  // It is used by daemon::control::create(), which spawns a new daemon process
+  // with this flag set. This approach allows reusing the same binary for both
+  // the daemon and the CLI.
   #[arg(long = INTERNAL_DAEMON_INIT_FLAG, hide = true)]
   pub init_internal: bool,
 
@@ -43,11 +49,13 @@ pub enum Command {
   Interactive,
 }
 
-/* Command-line arguments for the interactive terminal: */
+// Interactive mode command-line arguments.
 
 #[derive(Parser)]
-#[command(no_binary_name=true)] // tells clap not to expect the first argument to be the program name
-#[command(bin_name="")] // unsets the name used in help messages
+// Tells clap not to expect the first argument to be the program name.
+#[command(no_binary_name=true)] 
+// Unsets the name used in help messages.
+#[command(bin_name="")]
 #[command(
   about = "Interactive mode of the peer-to-peer chat.\n\n\
           Use commands like `connect`, `send`, and `peers` to manage peers and messages.\n\
@@ -72,8 +80,10 @@ pub enum DaemonCmd {
   Status,
 }
 
-/* Common commands for both interactive and non-interactive modes: messaging commands: */
+// Peer-related commands (common for both main application and REPL mode).
 
+// NOTE: Consider bringing out all the `rename`s into a single place as consts, 
+// NOTE: to avoid inconsistencies and make it easier to change command names in the future.
 #[derive(Subcommand)]
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "peer_cmd", content = "data")]
