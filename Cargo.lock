@@ -864,6 +864,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "flexi_logger"
+version = "0.31.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aea7feddba9b4e83022270d49a58d4a1b3fdad04b34f78cf1ce471f698e42672"
+dependencies = [
+ "chrono",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2350,12 +2361,15 @@ name = "p2p-chat"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "flexi_logger",
  "iroh",
+ "log",
  "nix",
  "rustyline",
  "serde",
  "serde_json",
  "shlex",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

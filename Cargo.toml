@@ -7,6 +7,9 @@ edition = "2021"
 name = "p2pchat"
 path = "src/main.rs"
 
+[lib] 
+path = "src/lib/mod.rs"
+
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 rustyline = "18.0.0"
@@ -16,6 +19,9 @@ tokio = { version = "1.51.1", features = ["net", "io-util", "macros", "rt-multi-
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 iroh = "0.98.1"
+thiserror = "2.0.18"
+log = "0.4.29"
+flexi_logger = { version = "0.31.8", default-features = false }
 
 [profile.release]
 lto = true
