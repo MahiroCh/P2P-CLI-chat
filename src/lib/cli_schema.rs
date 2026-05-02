@@ -1,7 +1,7 @@
 //! Command-line interface and schemas for the peer-to-peer chat application.
 
 use clap::{Parser, Subcommand};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // INTERNAL_DAEMON_INIT_FLAG is not intended to be seen and used by the user.
 // It is used by daemon::control::create(), which spawns a new daemon process
@@ -14,10 +14,10 @@ pub const INTERNAL_DAEMON_INIT_FLAG: &str = "initializedaemoninternalcmd";
 #[derive(Parser)]
 #[command(
   about = "Simple peer-to-peer chat.\n\n\
-          Before establishing connections, launch daemon first with `daemon` set of commands.\n\
-          Use subcommands like `connect`, `send`, and `peers` to manage peers and messages.\n\
-          You can also start an interactive terminal session with the `interactive` command, \
-          which allows you to enter commands in a REPL-like environment.",
+           Before establishing connections, launch daemon first with `daemon` set of commands.\n\
+           Use subcommands like `connect`, `send`, and `peers` to manage peers and messages.\n\
+           You can also start an interactive terminal session with the `interactive` command, \
+           which allows you to enter commands in a REPL-like environment.",
   args_conflicts_with_subcommands = true,
   arg_required_else_help = true,
   override_usage = "p2pchat <COMMAND>"
@@ -50,22 +50,19 @@ pub enum Command {
 
 #[derive(Parser)]
 // Tells clap not to expect the first argument to be the program name.
-#[command(no_binary_name=true)] 
+#[command(no_binary_name = true)]
 // Unsets the name used in help messages.
-#[command(bin_name="")]
+#[command(bin_name = "")]
 #[non_exhaustive]
-#[command(
-  about = "Interactive mode of the peer-to-peer chat.\n\n\
-          Use commands like `connect`, `send`, and `peers` to manage peers and messages.\n\
-          Type `quit` to exit the interactive session."
-)]
+#[command(about = "Interactive mode of the peer-to-peer chat.\n\n\
+           Use commands like `connect`, `send`, and `peers` to manage peers and messages.\n\
+           Type `quit` to exit the interactive session.")]
 pub enum InteractiveCommand {
   #[command(flatten)]
   Peer(PeerCmd),
   /// Quit interactive terminal session
   Quit,
 }
-
 
 #[derive(Subcommand)]
 #[non_exhaustive]
@@ -80,10 +77,9 @@ pub enum DaemonCmd {
 
 // == Peer-related commands (common for both main application and REPL mode) ==
 
-// NOTE: Consider bringing out all the `rename`s into a single place as consts, 
+// NOTE: Consider bringing out all the `rename`s into a single place as consts,
 // NOTE: to avoid inconsistencies and make it easier to change command names in the future.
-#[derive(Subcommand)]
-#[derive(Serialize, Deserialize)]
+#[derive(Subcommand, Serialize, Deserialize)]
 #[serde(tag = "peer_cmd", content = "data")]
 #[non_exhaustive]
 pub enum PeerCmd {

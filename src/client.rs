@@ -1,13 +1,13 @@
 //! Client process for p2p chat application.
 
 mod daemon_control;
-mod repl;
 mod error;
+mod repl;
 
-pub use error::{Error, ErrorKind};
-use error::Result;
 use daemon_control as daemon;
-use p2p_chat::{logger, cli_schema::*};
+use error::Result;
+pub use error::{Error, ErrorKind};
+use p2p_chat::{cli_schema::*, logger};
 
 // == Run client ==
 
@@ -24,7 +24,11 @@ pub fn run(cmd: Command) -> std::result::Result<(), ()> {
     Command::Peer { subcmd } => handle_peer_cmd(&subcmd),
     Command::Interactive => handle_repl_cmd(),
     _ => unreachable!(),
-  }.is_err() { return Err(()); } 
+  }
+  .is_err()
+  {
+    return Err(());
+  }
 
   Ok(())
 }
@@ -122,7 +126,7 @@ async fn handle_repl_cmd() -> Result<()> {
   ensure_daemon_ready()?;
 
   match repl::run().await {
-    Ok(()) => {},
+    Ok(()) => {}
     Err(err) if matches!(err.kind(), ErrorKind::DaemonConnectionFailed) => {
       eprintln!(
         "Interactive mode failed because failed to connect to daemon. \
@@ -130,9 +134,11 @@ async fn handle_repl_cmd() -> Result<()> {
       );
       log::error!("Interactive mode failed: {err}");
       return Err(err);
-    },
+    }
     Err(err) if matches!(err.kind(), ErrorKind::PeerCommandFailed) => {
-      eprintln!("Failed to communicate peer command with daemon in interactive mode");
+      eprintln!(
+        "Failed to communicate peer command with daemon in interactive mode"
+      );
       log::error!("Failed to communicate peer command to daemon: {err}");
       return Err(err);
     }
@@ -140,7 +146,7 @@ async fn handle_repl_cmd() -> Result<()> {
       eprintln!("Interactive mode failed. See logs for more info");
       log::error!("Interactive mode failed: {err}");
       return Err(err);
-    },
+    }
   }
 
   Ok(())
@@ -151,22 +157,26 @@ async fn handle_repl_cmd() -> Result<()> {
 fn ensure_daemon_ready() -> Result<()> {
   match daemon::status() {
     Ok(daemon::Status::Running { .. }) => Ok(()),
-
     Ok(daemon::Status::NotRunning) => {
       eprintln!("Daemon is not running. Start daemon first");
       log::info!("Client command requires daemon but daemon is not running");
       Err(Error::from(ErrorKind::DaemonNotRunningButNeeded))
     }
-
-    Err(err) if matches!(
-      err.kind(),
-      ErrorKind::DaemonStateUnknown | ErrorKind::DaemonCorrupted
-    ) => {
-      eprintln!("Cannot proceed: daemon state is unknown or corrupted. See logs for more info");
-      log::error!("Daemon state invalid, cannot procceed with client command: {err}");
+    Err(err)
+      if matches!(
+        err.kind(),
+        ErrorKind::DaemonStateUnknown | ErrorKind::DaemonCorrupted
+      ) =>
+    {
+      eprintln!(
+        "Cannot proceed: daemon state is unknown or corrupted. \
+         See logs for more info"
+      );
+      log::error!(
+        "Daemon state invalid, cannot procceed with client command: {err}"
+      );
       Err(err)
     }
-
     Err(_) => unreachable!(),
   }
 }

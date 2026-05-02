@@ -2,17 +2,15 @@
 
 mod error;
 
+use crate::paths::{cli_log_file_spec, daemon_log_file_spec};
 use error::Result;
 pub use error::{Error, ErrorKind};
-use crate::paths::{cli_log_file_spec, daemon_log_file_spec};
 
 use flexi_logger::{Cleanup, Criterion, Logger, Naming};
 
 pub fn init_client_logger() -> Result<()> {
   Logger::try_with_str("info")
-    .map_err(|err| {
-      Error::new(ErrorKind::LoggerInitFailed, err)
-    })?
+    .map_err(|err| Error::new(ErrorKind::LoggerInitFailed, err))?
     .log_to_file(cli_log_file_spec())
     .format(flexi_logger::detailed_format)
     .rotate(
@@ -22,18 +20,14 @@ pub fn init_client_logger() -> Result<()> {
     )
     .append()
     .start()
-    .map_err(|err| {
-      Error::new(ErrorKind::LoggerInitFailed, err)
-    })?;
+    .map_err(|err| Error::new(ErrorKind::LoggerInitFailed, err))?;
 
   Ok(())
 }
 
 pub fn init_daemon_logger() -> Result<()> {
   Logger::try_with_str("info")
-    .map_err(|err| {
-      Error::new(ErrorKind::LoggerInitFailed, err)
-    })?
+    .map_err(|err| Error::new(ErrorKind::LoggerInitFailed, err))?
     .log_to_file(daemon_log_file_spec())
     .format(flexi_logger::detailed_format)
     .rotate(
@@ -43,9 +37,7 @@ pub fn init_daemon_logger() -> Result<()> {
     )
     .append()
     .start()
-    .map_err(|err| {
-      Error::new(ErrorKind::LoggerInitFailed, err)
-    })?;
+    .map_err(|err| Error::new(ErrorKind::LoggerInitFailed, err))?;
 
   Ok(())
 }
