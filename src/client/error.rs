@@ -23,20 +23,22 @@ pub enum ErrorKind {
   DaemonNotRunningButNeeded,
 
   // Communication with daemon errors.
+  #[error("daemon aborted connection")]
+  DaemonAbortedConnection,
   #[error("failed to create session with daemon")]
   DaemonConnectionFailed,
-  #[error("peer command error")]
-  PeerCommandFailed,
-  #[error("serde failed for peer command")]
+  #[error("daemon refused connection from client")]
+  DaemonRefusedConnection,
+  #[error("serde failed for action command")]
   SerdeFailed,
-  #[error("failed to write peer command to daemon")]
+  #[error("failed to write action command to daemon")]
   WriteCommandFailed,
   #[error("failed to read daemon response")]
   ReadResponseFailed,
 
   // REPL errors.
-  #[error("repl engine initialization error")]
-  ReplFailed,
-  #[error("failed to read input in REPL mode")]
-  ReplReadCliFailed,
+  #[error("repl input cannot be read or parsed into a valid command")]
+  ReplReadOrParseFailed,
+  #[error("failed to initialize REPL mode")]
+  ReplInitFailed,
 }

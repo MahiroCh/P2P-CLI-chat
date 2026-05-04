@@ -26,7 +26,7 @@ pub fn init_client_logger() -> Result<()> {
 }
 
 pub fn init_daemon_logger() -> Result<()> {
-  Logger::try_with_str("info")
+  Logger::try_with_str("debug")
     .map_err(|err| Error::new(ErrorKind::LoggerInitFailed, err))?
     .log_to_file(daemon_log_file_spec())
     .format(flexi_logger::detailed_format)

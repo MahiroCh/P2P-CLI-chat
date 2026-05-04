@@ -7,17 +7,17 @@ define_error!();
 #[derive(thiserror::Error, Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum ErrorKind {
-  // Logical errors:
+  // Logical errors.
   #[error("no or invalid parent directory for socket file")]
   ParentDirInvalid,
-  #[error("socket connection aborted by peer")]
+  #[error("socket connection aborted by counterparty")]
   ConnectionAborted,
   #[error("socket frame too large")]
   FrameTooLarge,
   #[error("socket payload was not valid UTF-8")]
   InvalidUtf8,
 
-  // I/O errors:
+  // I/O errors.
   #[error("failed to create parent directory for socket file")]
   CreateParentDir,
   #[error("failed to bind socket listener")]

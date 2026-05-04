@@ -1,62 +1,134 @@
 //! Client module for communicating with the daemon process.
 
 use crate::client::{Error, ErrorKind, Result};
-use p2p_chat::{cli_schema::*, paths, socket};
+use p2p_chat::{paths, schemas::*, socket};
 
 use tokio::net::UnixStream as TokioUnixStream;
 
-pub struct Session {
+pub(crate) struct ConnectionSession {
   connection: TokioUnixStream,
 }
 
-impl Session {
-  pub async fn connect() -> Result<Self> {
+impl ConnectionSession {
+  pub(crate) async fn new() -> Result<Self> {
     let socket_path = paths::daemon_socket();
-    let connection =
-      TokioUnixStream::connect(&socket_path)
-        .await
-        .map_err(|err| {
-          log::debug!(
-            "Failed to connect to daemon socket at path {:?}: {err:?}",
-            &socket_path
-          );
-          Error::new(ErrorKind::DaemonConnectionFailed, err)
-        })?;
+    let mut connection = TokioUnixStream::connect(&socket_path)
+      .await
+      .inspect_err(|err| {
+        log::debug!(
+          "ConnectionSession::new() failed to connect to daemon socket at path {:?}: {err:?}",
+          &socket_path
+        );
+      })
+      .map_err(|err| Error::new(ErrorKind::DaemonConnectionFailed, err))?;
+
+    handshake(&mut connection).await.inspect_err(|err| {
+      log::debug!(
+        "ConnectionSession::new() failed during handshake() with daemon: {err:?}"
+      );
+    })?;
 
     Ok(Self { connection })
   }
 
   // NOTE: Temporary function for testing the socket communication,
   // NOTE: to be replaced with real command processing logic later.
-  pub async fn _test_handle_peer_command(
-    &mut self,
-    cmd: &PeerCmd,
-  ) -> Result<String> {
-    let serded_cmd = serde_json::to_string(cmd).map_err(|err| {
+  pub(crate) async fn _send_cmd_to_daemon(&mut self, cmd: &ActionCmd) -> Result<()> {
+    let json = serde_json::to_string(cmd)
+      .inspect_err(|err| {
+        log::debug!(
+          "ConnectionSession::_send_cmd_to_daemon(): Failed to serialize action \
+           command using serde_json: {err:?}"
+        );
+      })
+      .map_err(|err| Error::new(ErrorKind::SerdeFailed, err))?;
+
+    match socket::write_data(&mut self.connection, &json).await {
+      Ok(()) => {}
+      Err(err) => match err.kind() {
+        socket::ErrorKind::ConnectionAborted => {
+          log::debug!(
+            "ConnectionSession::_send_cmd_to_daemon(): daemon closed connection (abort): {err:?}"
+          );
+          return Err(Error::new(ErrorKind::DaemonAbortedConnection, err));
+        }
+        _ => {
+          log::debug!(
+            "ConnectionSession::_send_cmd_to_daemon(): failed to write command to daemon socket: {err:?}"
+          );
+          return Err(Error::new(ErrorKind::WriteCommandFailed, err));
+        }
+      },
+    }
+
+    Ok(())
+  }
+
+  // NOTE: Temporary function for testing the socket communication,
+  // NOTE: to be replaced with real command processing logic later.
+  pub(crate) async fn _recv_response_from_daemon(&mut self) -> Result<ActionCmd> {
+    let json = match socket::read_data(&mut self.connection).await {
+      Ok(s) => s,
+      Err(err) => match err.kind() {
+        socket::ErrorKind::ConnectionAborted => {
+          log::debug!(
+            "ConnectionSession::_recv_response_from_daemon(): daemon aborted connection while reading response: {err:?}"
+          );
+          return Err(Error::new(ErrorKind::DaemonAbortedConnection, err));
+        }
+        _ => {
+          log::debug!(
+            "ConnectionSession::_recv_response_from_daemon(): failed to read response from daemon socket: {err:?}"
+          );
+          return Err(Error::new(ErrorKind::ReadResponseFailed, err));
+        }
+      },
+    };
+
+    let cmd: ActionCmd = serde_json::from_str(&json)
+      .inspect_err(|err| {
+        log::debug!(
+          "ConnectionSession::_recv_response_from_daemon(): Failed to deserialize \
+           command with serde_json::from_str() from daemon response in 
+           _recv_response_from_daemon: {err:?}"
+        );
+      })
+      .map_err(|err| Error::new(ErrorKind::SerdeFailed, err))?;
+
+    Ok(cmd)
+  }
+}
+
+// == Helpers ==
+
+async fn handshake(connection: &mut TokioUnixStream) -> Result<()> {
+  let handshake_str = match socket::read_data(connection).await {
+    Ok(s) => s,
+    Err(err) => match err.kind() {
+      socket::ErrorKind::ConnectionAborted => {
+        log::debug!("ConnectionSession::handshake(): daemon aborted connection during handshake: {err:?}");
+        return Err(Error::new(ErrorKind::DaemonAbortedConnection, err));
+      }
+      _ => {
+        log::debug!("ConnectionSession::handshake(): failed to read handshake from daemon socket: {err:?}");
+        return Err(Error::new(ErrorKind::DaemonConnectionFailed, err));
+      }
+    },
+  };
+
+  let handshake: DaemonHandshake = serde_json::from_str(&handshake_str)
+    .inspect_err(|err| {
       log::debug!(
-        "Failed to serialize peer command using serde_json in _test_handle_peer_command: {err:?}"
+        "ConnectionSession::handshake() failed to parse daemon handshake JSON with \
+         serde_json::from_str(): {err:?}"
       );
-      Error::new(ErrorKind::SerdeFailed, err)
-    })?;
+    })
+    .map_err(|err| Error::new(ErrorKind::DaemonConnectionFailed, err))?;
 
-    socket::write_data(&mut self.connection, &serded_cmd)
-      .await
-      .map_err(|err| {
-        log::debug!(
-          "Failed to write peer command to daemon socket in _test_handle_peer_command: {err:?}"
-        );
-        Error::new(ErrorKind::WriteCommandFailed, err)
-      })?;
-
-    let response = socket::read_data(&mut self.connection)
-      .await
-      .map_err(|err| {
-        log::debug!(
-          "Failed to read response from daemon socket in _test_handle_peer_command: {err:?}"
-        );
-        Error::new(ErrorKind::ReadResponseFailed, err)
-      })?;
-
-    Ok(response)
+  match handshake {
+    DaemonHandshake::Ok => Ok(()),
+    DaemonHandshake::Busy { reason } => {
+      Err(Error::new(ErrorKind::DaemonRefusedConnection, reason))
+    }
   }
 }

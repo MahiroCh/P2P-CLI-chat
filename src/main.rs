@@ -3,7 +3,7 @@
 mod client;
 mod daemon;
 
-use p2p_chat::cli_schema::Cli;
+use p2p_chat::schemas::Cli;
 
 use std::process::{ExitCode, Termination};
 

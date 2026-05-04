@@ -1,34 +1,25 @@
 //! Daemon control module: responsible for managing the lifecycle of the daemon
 //! process, including starting, stopping, and checking its status.
 
-// NOTE: Consider implementing some way for daemon to kill itself if it
-// NOTE: idles without CLI connection for too long to avoid dangling process.
-// NOTE: (which is not really bad as I know, but still...)
-
 mod session;
 
 use crate::client::{Error, ErrorKind, Result};
-use p2p_chat::{cli_schema::INTERNAL_DAEMON_INIT_FLAG, paths, pid, socket};
-pub use session::Session;
+use p2p_chat::{paths, pid, schemas::INTERNAL_DAEMON_INIT_FLAG, socket};
+pub(crate) use session::ConnectionSession;
 
 use nix::{sys::signal, unistd::Pid};
 
-pub enum CreateRes {
-  Started { pid: i32 },
-  Running { pid: i32 },
+pub(super) enum CreateRes {
+  Started,
+  Running,
 }
 
 // == Control functions for managing the daemon process ==
 
-pub fn create() -> Result<CreateRes> {
-  // TODO: If PID exists, it doesn't necessarily mean the process is
-  // TODO: our p2p-chat daemon. Some other proces might have taken the PID.
-  // TODO: Implement this check.
-  // NOTE: Stronger design for the future: pair this with a lockfile or Unix socket.
-  // Cannot throw error in the current implementation.
+pub(super) fn create() -> Result<CreateRes> {
   match status() {
     Ok(Status::NotRunning) => { /* Continue running create() */ }
-    Ok(Status::Running { pid }) => return Ok(CreateRes::Running { pid }),
+    Ok(Status::Running { .. }) => return Ok(CreateRes::Running),
     Err(err) if matches!(err.kind(), ErrorKind::DaemonStateUnknown) => {
       log::debug!("status() inside create() failed to obtain daemon state: {err:?}");
       return Err(err);
@@ -45,8 +36,6 @@ pub fn create() -> Result<CreateRes> {
 
   // Configure command to run the binary with the hidden flag. Redirect stdio to null
   // for daemon.
-  // NOTE: Consider later adding an option to redirect daemon logs to a file or
-  // NOTE: another terminal window.
   let mut command = std::process::Command::new(exe);
   command
     // Trigger hidden flag to call real daemon.
@@ -69,27 +58,21 @@ pub fn create() -> Result<CreateRes> {
     });
   }
 
-  // Run the spawn command.
-  let child = command.spawn().map_err(|err| {
+  // Run the spawn daemon process command.
+  let _ = command.spawn().map_err(|err| {
     log::debug!("command.spawn() failed: {err:?}");
     Error::new(ErrorKind::DaemonStartFailed, err)
   })?;
 
-  // TODO: Consider implementing some waiting strategy for the daemon to be
-  // TODO: fully initialized, e.g. by waiting for the PID file or socket file to
-  // TODO: be created, or something else.
-
-  Ok(CreateRes::Started {
-    pid: child.id() as i32,
-  })
+  Ok(CreateRes::Started)
 }
 
-pub enum DestroyRes {
+pub(super) enum DestroyRes {
   Destroyed { pid: i32 },
   NotRunning,
 }
 
-pub fn destroy() -> Result<DestroyRes> {
+pub(super) fn destroy() -> Result<DestroyRes> {
   let pid = match status() {
     Ok(Status::Running { pid }) => pid,
     Ok(Status::NotRunning) => return Ok(DestroyRes::NotRunning),
@@ -117,12 +100,12 @@ pub fn destroy() -> Result<DestroyRes> {
   Ok(DestroyRes::Destroyed { pid })
 }
 
-pub enum Status {
+pub(super) enum Status {
   Running { pid: i32 },
   NotRunning,
 }
 
-pub fn status() -> Result<Status> {
+pub(super) fn status() -> Result<Status> {
   let pid_fp = paths::daemon_pidfile();
   let mut pid: Option<i32> = None;
 
@@ -221,7 +204,7 @@ pub fn status() -> Result<Status> {
            no socket file at expected path, so assume daemon is corrupted and \
            return DaemonCorrupted error"
         );
-        // TODO: Consinder sending SIGTERM to the daemon.
+        // NOTE: Consider sending SIGTERM to the daemon.
         return Err(Error::from(ErrorKind::DaemonCorrupted));
       }
     }
@@ -235,11 +218,6 @@ pub fn status() -> Result<Status> {
 
 // == Helpers ==
 
-// TODO: This should be taken in account: if sending a null signal fails with
-// TODO: the error ESRCH, then we know the process doesn’t exist. If the call fails
-// TODO: with the error EPERM (meaning the process exists, but we don’t have permission
-// TODO: to send a signal to it) or succeeds (meaning we do have permission to send
-// TODO: a signal to the process), then we know that the process exists.
 fn is_process_alive(pid: nix::unistd::Pid) -> bool {
   match signal::kill(pid, None) {
     Ok(()) => true,

@@ -4,14 +4,13 @@ mod daemon_control;
 mod error;
 mod repl;
 
-use daemon_control as daemon;
-use error::Result;
-pub use error::{Error, ErrorKind};
-use p2p_chat::{cli_schema::*, logger};
+use daemon_control::{self as daemon, ConnectionSession};
+use error::{Error, ErrorKind, Result};
+use p2p_chat::{logger, schemas::*};
 
 // == Run client ==
 
-pub fn run(cmd: Command) -> std::result::Result<(), ()> {
+pub(super) fn run(cmd: Command) -> std::result::Result<(), ()> {
   if let Err(err) = logger::init_client_logger() {
     eprintln!("Failed to start client");
     // Logger is not initialized so fallback to printing error details to stderr.
@@ -21,7 +20,7 @@ pub fn run(cmd: Command) -> std::result::Result<(), ()> {
 
   if match cmd {
     Command::Daemon { subcmd } => handle_daemon_cmd(&subcmd),
-    Command::Peer { subcmd } => handle_peer_cmd(&subcmd),
+    Command::Action(action_cmd) => handle_action_cmd(&action_cmd),
     Command::Interactive => handle_repl_cmd(),
     _ => unreachable!(),
   }
@@ -38,13 +37,11 @@ pub fn run(cmd: Command) -> std::result::Result<(), ()> {
 fn handle_daemon_cmd(cmd: &DaemonCmd) -> Result<()> {
   match cmd {
     DaemonCmd::Start => match daemon::create() {
-      Ok(daemon::CreateRes::Started { pid }) => {
+      Ok(daemon::CreateRes::Started { .. }) => {
         println!("Daemon started");
-        log::info!("Daemon started with PID: {pid}");
       }
-      Ok(daemon::CreateRes::Running { pid }) => {
+      Ok(daemon::CreateRes::Running { .. }) => {
         println!("Daemon is already running");
-        log::info!("Daemon already running with PID: {pid}");
       }
       Err(err) => {
         eprintln!("Failed to create daemon. See logs for more info");
@@ -70,20 +67,22 @@ fn handle_daemon_cmd(cmd: &DaemonCmd) -> Result<()> {
     DaemonCmd::Status => match daemon::status() {
       Ok(daemon::Status::Running { pid }) => {
         println!("Daemon is running");
-        log::info!("Daemon is running with PID: {pid}");
+        log::info!("Daemon status checked: it is running with PID: {pid}");
       }
       Ok(daemon::Status::NotRunning) => {
         println!("Daemon is not running");
-        log::info!("Daemon is not running");
+        log::info!("Daemon status checked: it is not running");
       }
       Err(err) if matches!(err.kind(), ErrorKind::DaemonStateUnknown) => {
         eprintln!("Failed to obtain daemon state. See logs for more info");
-        log::error!("Failed to obtain daemon state: {err}");
+        log::error!(
+          "Daemon status check requested: failed to obtain its state: {err}"
+        );
         return Err(err);
       }
       Err(err) if matches!(err.kind(), ErrorKind::DaemonCorrupted) => {
         eprintln!("Daemon is corrupted. See logs for more info");
-        log::error!("Daemon is corrupted: {err}");
+        log::error!("Daemon status checked: it is corrupted: {err}");
         return Err(err);
       }
       Err(_) => unreachable!(),
@@ -95,28 +94,58 @@ fn handle_daemon_cmd(cmd: &DaemonCmd) -> Result<()> {
 }
 
 #[tokio::main]
-async fn handle_peer_cmd(cmd: &PeerCmd) -> Result<()> {
+async fn handle_action_cmd(cmd: &ActionCmd) -> Result<()> {
   ensure_daemon_ready()?;
 
-  let mut daemon_client = daemon::Session::connect()
-    .await
-    .inspect_err(|err| {
+  let mut daemon_client = match ConnectionSession::new().await {
+    Ok(session) => session,
+    Err(err) if matches!(err.kind(), ErrorKind::DaemonRefusedConnection) => {
+      eprintln!("Daemon refused connection. See logs for more info");
+      log::error!("Daemon refused connection while handling action command: {err}");
+      return Err(err);
+    }
+    Err(err) => {
       eprintln!("Failed to connect to daemon. See logs for more info");
       log::error!("Failed to connect to daemon socket/session: {err}");
-    })
-    .map_err(|err| Error::new(ErrorKind::DaemonConnectionFailed, err))?;
+      return Err(err);
+    }
+  };
 
-  // Temp behavior for testing.
-  let response = daemon_client
-    ._test_handle_peer_command(cmd)
-    .await
-    .inspect_err(|err| {
-      eprintln!("Peer command failed. See logs for more info");
-      log::error!("Peer command failed: {err}");
-    })
-    .map_err(|err| Error::new(ErrorKind::PeerCommandFailed, err))?;
+  match daemon_client._send_cmd_to_daemon(cmd).await {
+    Ok(()) => {}
+    Err(err) if matches!(err.kind(), ErrorKind::DaemonAbortedConnection) => {
+      eprintln!(
+        "Daemon closed connection while sending action command. See logs for more info"
+      );
+      log::error!("Failed to send action command because daemon closed connection: {err}");
+      return Err(err);
+    }
+    Err(err) => {
+      eprintln!("Failed to send action command to daemon. See logs for more info");
+      log::error!("Failed to send action command: {err}");
+      return Err(err);
+    }
+  }
 
-  println!("Response from daemon: {response}");
+  log::info!("Action command sent to daemon: {cmd:?}");
+
+  // NOTE: Temp behavior for testing.
+  let response = match daemon_client._recv_response_from_daemon().await {
+    Ok(response) => response,
+    Err(err) if matches!(err.kind(), ErrorKind::DaemonAbortedConnection) => {
+      eprintln!("Daemon closed connection while client was waiting for response. See logs for more info");
+      log::error!("Failed to receive response from daemon because it closed the connection: {err}");
+      return Err(err);
+    }
+    Err(err) => {
+      eprintln!("Failed to receive response from daemon. See logs for more info");
+      log::error!("Failed to receive response from daemon: {err}");
+      return Err(err);
+    }
+  };
+
+  println!("Response from daemon: {:?}", response);
+  log::info!("Received response from daemon for action command: {response:?}");
 
   Ok(())
 }
@@ -127,24 +156,48 @@ async fn handle_repl_cmd() -> Result<()> {
 
   match repl::run().await {
     Ok(()) => {}
+    Err(err) if matches!(err.kind(), ErrorKind::DaemonRefusedConnection) => {
+      eprintln!(
+        "Daemon refused connection while entering interactive mode. See logs for more info"
+      );
+      log::error!("Daemon refused connection in REPL mode: {err}");
+      return Err(err);
+    }
+    Err(err) if matches!(err.kind(), ErrorKind::DaemonAbortedConnection) => {
+      eprintln!(
+        "Daemon closed connection while communicating with it in interactive mode. \
+         See logs for more info"
+      );
+      log::error!("Daemon aborted connection during REPL mode: {err}");
+      return Err(err);
+    }
     Err(err) if matches!(err.kind(), ErrorKind::DaemonConnectionFailed) => {
       eprintln!(
         "Interactive mode failed because failed to connect to daemon. \
          See logs for more info"
       );
-      log::error!("Interactive mode failed: {err}");
+      log::error!("REPL mode failed: {err}");
       return Err(err);
     }
-    Err(err) if matches!(err.kind(), ErrorKind::PeerCommandFailed) => {
+    Err(err)
+      if matches!(
+        err.kind(),
+        ErrorKind::WriteCommandFailed
+          | ErrorKind::ReadResponseFailed
+          | ErrorKind::SerdeFailed
+      ) =>
+    {
       eprintln!(
-        "Failed to communicate peer command with daemon in interactive mode"
+        "Failed to communicate action command with daemon in interactive mode"
       );
-      log::error!("Failed to communicate peer command to daemon: {err}");
+      log::error!(
+        "Failed to communicate action command with daemon in REPL mode: {err}"
+      );
       return Err(err);
     }
     Err(err) => {
       eprintln!("Interactive mode failed. See logs for more info");
-      log::error!("Interactive mode failed: {err}");
+      log::error!("REPL mode failed: {err}");
       return Err(err);
     }
   }

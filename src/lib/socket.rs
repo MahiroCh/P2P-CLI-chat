@@ -13,8 +13,6 @@ use tokio::{
 
 // == Socket file management ==
 
-// Define a maximum frame size for socket communication between CLI and Daemon
-// to prevent potential DoS attacks or resource exhaustion.
 pub const MAX_FRAME_BYTES: u32 = 64 * 1024;
 
 pub fn create(path: &Path) -> Result<TokioUnixListener> {
@@ -67,6 +65,8 @@ pub fn cleanup(path: &Path) -> Result<()> {
   Ok(())
 }
 
+// NOTE: This function is not cancel safe. It should only be called in contexts
+// NOTE: where is is guaranteed to complete.
 pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<()> {
   let msg_as_bytes = message.as_bytes();
   let msg_byte_len = msg_as_bytes.len() as u32;
@@ -104,7 +104,8 @@ pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<(
   Ok(())
 }
 
-// TODO: Reading methods are not cancel safe in here.
+// NOTE: This function is not cancel safe. It should only be called in contexts
+// NOTE: where is is guaranteed to complete.
 pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String> {
   let msg_byte_len = match socket.read_u32().await {
     Ok(len) => len,
@@ -146,7 +147,7 @@ pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String> {
 // == Helpers ==
 
 // Check if the error is similar to connection abort errors, which can be
-// caused by the peer closing the connection, and so on.
+// caused by the peer closing the connection.
 fn is_connection_abort_like(err: &std::io::Error) -> bool {
   matches!(
     err.kind(),

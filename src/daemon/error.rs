@@ -18,7 +18,19 @@ pub enum ErrorKind {
   #[error("daemon signal handler failed to initialize")]
   SignalHandlerFailed,
 
-  // Runtime errors.
-  #[error("daemon listener failed to accept a connection")]
+  // Connection errors.
+  #[error("client aborted connection")]
+  ClientAbortedConnection,
+  #[error("daemon failed to accept a connection")]
   ConnectionAcceptFailed,
+  #[error("connection rejected: maximum concurrent connections reached")]
+  ConnectionAtCapacity,
+
+  // Communication with client errors.
+  #[error("serde failed for action command")]
+  SerdeFailed,
+  #[error("daemon failed to read a command from client connection")]
+  ReadCommandFailed,
+  #[error("daemon failed to write a response to client connection")]
+  WriteResponseFailed,
 }

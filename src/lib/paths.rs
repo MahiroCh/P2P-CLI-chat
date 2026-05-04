@@ -37,7 +37,9 @@ pub fn cli_log_file_spec() -> FileSpec {
   log_file_spec(CLI_FILENAMES_BASE)
 }
 
-// For flexi_logger crate.
+// == Helpers ==
+
+// For flexi_logger logger crate.
 fn log_file_spec(basename: &str) -> FileSpec {
   FileSpec::default()
     .directory(state_dir())
@@ -54,7 +56,7 @@ fn state_dir() -> PathBuf {
   dir_from_env_or_home("XDG_STATE_HOME", ".local/state").join(APP)
 }
 
-// Not used in the current implementation.
+// NOTE: Not used in the current implementation.
 pub fn data_dir() -> PathBuf {
   dir_from_env_or_home("XDG_DATA_HOME", ".local/share").join(APP)
 }
@@ -67,7 +69,6 @@ fn dir_from_env_or_home(var: &str, fallback_under_home: &str) -> PathBuf {
 }
 
 fn home_dir() -> PathBuf {
-  // TODO: Consider error handling here.
   env::var_os("HOME")
     .map(PathBuf::from)
     .expect("failed to determine home directory")

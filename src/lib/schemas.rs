@@ -15,7 +15,7 @@ pub const INTERNAL_DAEMON_INIT_FLAG: &str = "initializedaemoninternalcmd";
 #[command(
   about = "Simple peer-to-peer chat.\n\n\
            Before establishing connections, launch daemon first with `daemon` set of commands.\n\
-           Use subcommands like `connect`, `send`, and `peers` to manage peers and messages.\n\
+           Use subcommands like `connect`, `send`, and `list` to manage peers and messages.\n\
            You can also start an interactive terminal session with the `interactive` command, \
            which allows you to enter commands in a REPL-like environment.",
   args_conflicts_with_subcommands = true,
@@ -32,12 +32,9 @@ pub struct Cli {
 #[derive(Subcommand)]
 #[non_exhaustive]
 pub enum Command {
-  /// Peers-related actions
-  Peer {
-    #[command(subcommand)]
-    subcmd: PeerCmd,
-  },
-  /// Daemon actions
+  #[command(flatten)]
+  Action(ActionCmd),
+  /// Daemon control commands
   Daemon {
     #[command(subcommand)]
     subcmd: DaemonCmd,
@@ -55,11 +52,11 @@ pub enum Command {
 #[command(bin_name = "")]
 #[non_exhaustive]
 #[command(about = "Interactive mode of the peer-to-peer chat.\n\n\
-           Use commands like `connect`, `send`, and `peers` to manage peers and messages.\n\
+           Use commands like `connect`, `send`, and `list` to manage peers and messages.\n\
            Type `quit` to exit the interactive session.")]
 pub enum InteractiveCommand {
   #[command(flatten)]
-  Peer(PeerCmd),
+  Action(ActionCmd),
   /// Quit interactive terminal session
   Quit,
 }
@@ -75,14 +72,12 @@ pub enum DaemonCmd {
   Status,
 }
 
-// == Peer-related commands (common for both main application and REPL mode) ==
+// == Action commands for daemon (common for both main application and REPL mode) ==
 
-// NOTE: Consider bringing out all the `rename`s into a single place as consts,
-// NOTE: to avoid inconsistencies and make it easier to change command names in the future.
-#[derive(Subcommand, Serialize, Deserialize)]
-#[serde(tag = "peer_cmd", content = "data")]
+#[derive(Subcommand, Serialize, Deserialize, Debug)]
+#[serde(tag = "action_cmd", content = "data")]
 #[non_exhaustive]
-pub enum PeerCmd {
+pub enum ActionCmd {
   /// Connect to the peer
   #[serde(rename = "connect")]
   Connect {
@@ -103,4 +98,15 @@ pub enum PeerCmd {
     #[serde(rename = "message")]
     message: String,
   },
+}
+
+// == Other schemas ==
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "status", content = "data")]
+pub enum DaemonHandshake {
+  #[serde(rename = "ok")]
+  Ok,
+  #[serde(rename = "busy")]
+  Busy { reason: String },
 }
