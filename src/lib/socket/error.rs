@@ -1,16 +1,14 @@
 //! Socket file management errors.
 
-define_error!();
+define_error!(Error, ErrorKind);
 
-// == Error kinds ==
-
-#[derive(thiserror::Error, Debug, Clone, Copy)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorKind {
   // Logical errors.
   #[error("no or invalid parent directory for socket file")]
   ParentDirInvalid,
-  #[error("socket connection aborted by counterparty")]
+  #[error("socket connection aborted")]
   ConnectionAborted,
   #[error("socket frame too large")]
   FrameTooLarge,
@@ -30,6 +28,9 @@ pub enum ErrorKind {
   ReadFromSocket,
   #[error("failed to write to socket")]
   WriteToSocket,
+
+  #[error("error")]
+  Other,
 }
 
 #[derive(thiserror::Error, Debug)]

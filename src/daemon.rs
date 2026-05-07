@@ -1,233 +1,342 @@
 //! Daemon process for p2p chat application.
 
+mod client_session;
 mod error;
-mod session;
-mod command_processor;
+mod logger;
+mod network;
 
-use error::{Error, ErrorKind, Result};
-use p2p_chat::{logger, paths, pid, socket};
-use session::{Connection, ConnectionsSession};
-
-use std::collections::HashSet;
-use tokio::{
-  signal::unix::{signal, Signal as SignalListener, SignalKind},
-  sync::mpsc,
+use client_session::Session as ClientSession;
+use error::*;
+use network::NetworkHandle;
+use p2p_chat::{
+  paths, pid, socket,
+  schemas::{ClientRequest, DaemonEvent, NetEvent},
 };
 
-// == Run daemon ==
+use tokio::signal::unix::{signal, Signal as SignalListener, SignalKind};
+use tokio::sync::mpsc;
+
+type Result<T> = std::result::Result<T, Error>;
+
+pub const DEFAULT_LOG_LEVEL: &str = "info";
+
+// == Daemon logic ==
 
 struct DaemonCleanupGuard;
 impl Drop for DaemonCleanupGuard {
   fn drop(&mut self) {
     if let Err(err) = pid::cleanup(&paths::daemon_pidfile()) {
-      log::warn!("Failed to clean up daemon PID file on daemon shutdown: {err}");
+      log::warn!("Failed to clean up daemon PID file on shutdown: {err}");
       log::debug!(
-        "drop() of DaemonCleanupGuard failed to clean up daemon PID file: {err:?}"
+        "CleanupGuard failed to clean up daemon PID file on shutdown: {err:?}"
       );
     }
-
     if let Err(err) = socket::cleanup(&paths::daemon_socket()) {
-      log::warn!("Failed to clean up daemon socket on daemon shutdown: {err}");
+      log::warn!("Failed to clean up daemon socket on shutdown: {err}");
       log::debug!(
-        "drop() of DaemonCleanupGuard failed to clean up daemon socket: {err:?}"
+        "CleanupGuard failed to clean up daemon socket on shutdown: {err:?}"
       );
     }
   }
 }
 
 #[tokio::main]
-pub(super) async fn run() -> std::result::Result<(), ()> {
-  if let Err(err) = logger::init_daemon_logger() {
-    eprint!("Failed to start daemon: ");
+pub(super) async fn run() -> Result<()> {
+  // Retrieve log level from environment variable.
+  // TODO: Consider other methods of passing log level to daemon.
+  let daemon_log_level = std::env::var("P2PCHAT_DAEMON_LOG_LEVEL")
+    .unwrap_or_else(|_| DEFAULT_LOG_LEVEL.to_owned());
+
+  logger::init(daemon_log_level).inspect_err(|err| {
     // Logger is not initialized so fallback to printing error details to stderr.
-    eprintln!("logger initialization error: {err}");
-    return Err(());
-  }
+    eprint!("Failed to start daemon due to logger initialization error: {err}");
+  })?;
 
   let _guard = DaemonCleanupGuard;
 
-  let (conn_session, mut signal_listener) = match daemon_init_components() {
-    Ok((conn_session, signal_listener)) => {
-      log::info!(
-        "Daemon with PID {} initialized successfully and ready to accept connections",
-        pid::this_proc_pid()
-      );
-      (conn_session, signal_listener)
-    }
-    Err(err)
-      if matches!(
-        err.kind(),
-        ErrorKind::PidFileCreationFailed
-          | ErrorKind::SocketCreationFailed
-          | ErrorKind::SignalHandlerFailed
-      ) =>
-    {
-      eprintln!(
-        "Daemon failed to initialize crucial components to run. \
-         See logs for more info"
-      );
-      log::error!(
-        "Daemon failed to run because of socket, \
-         pid file, or signal handler creation failure: {err}"
-      );
+  let (client_session, network_session, network_events_rx, mut signal_listener) = init_daemon_components()
+    .await
+    .inspect_err(|err| {
+      log::error!("Failed to initialize daemon components: {err}");
+      eprintln!("Daemon failed to initialize crucial component to run: {err}");
+    })?;
 
-      return Err(());
-    }
-    Err(_) => unreachable!(),
-  };
+  let (client_requests_tx, client_requests_rx) = 
+    mpsc::channel::<p2p_chat::schemas::ClientRequest>(256);
+  let (daemon_events_tx, daemon_events_rx) = 
+    mpsc::channel::<p2p_chat::schemas::DaemonEvent>(256);
+
+  let client_gateway_task_handle = tokio::spawn(client_gateway(
+    client_session,
+    client_requests_tx,
+    daemon_events_rx,
+  ));
+  let logic_task_handle = tokio::spawn(logic(
+    network_session,
+    network_events_rx,
+    client_requests_rx,
+    daemon_events_tx,
+  ));
+
+  log::info!(
+    "Daemon with PID {} initialized and ready to accept connections",
+    pid::this_proc_pid()
+  );
 
   match tokio::select! {
-    _ = signal_listener.recv() => Ok(()),
-    out = crate::daemon::accept_connections(&conn_session) => out
+    _ = signal_listener.recv() => {
+      log::info!("Daemon received termination signal, shutting down...");
+      Ok(())
+    },
+    out = logic_task_handle => match out {
+      Ok(Ok(())) => Ok(()),
+      Ok(Err(err)) => Err(err),
+      Err(join_err) => Err(Error::other(format!("daemon event router task failed: {join_err}"))),
+    },
+    out = client_gateway_task_handle => match out {
+      Ok(Ok(())) => Err(Error::other("client gateway stopped unexpectedly")),
+      Ok(Err(err)) => Err(err),
+      Err(join_err) => Err(Error::other(format!("client gateway task failed: {join_err}"))),
+    }
   } {
     Ok(()) => {
-      println!("Daemon received termination signal, shutting down...");
-      log::info!("Daemon received termination signal, shutting down...");
+      // TODO: print and log what does this mean
+      Ok(())
     }
     Err(err) => {
-      eprintln!("Daemon failed during business logic execution. See logs for more info");
-      log::error!("Daemon failed during business logic execution: {err}");
-      return Err(());
+      if err.kind() == ErrorKind::ClientAcceptFailed {
+        eprintln!("Daemon failed to accept client connection: {err}");
+        log::error!("Daemon failed to accept client connection: {err}");
+      } else {
+        eprintln!("Daemon failed: {err}");
+        log::error!("Daemon failed: {err}");
+      }
+
+      Err(err)
     }
   }
-
-  Ok(())
 }
 
-// == Daemon business logic ==
-
-async fn accept_connections(conn_session: &ConnectionsSession) -> Result<()> {
-  let (conn_finished_tx, mut conn_finished_rx) =
-    mpsc::channel::<u32>(conn_session.max_connections as usize);
-  let mut active_connection_ids: HashSet<u32> = HashSet::new();
-
-  loop {
-    tokio::select! {
-      accept_result = conn_session.accept_connection() => {
-        let connection = match accept_result {
-          Ok(conn) => conn,
-          Err(err) if matches!(err.kind(), ErrorKind::ConnectionAtCapacity) => {
-            log::warn!(
-              "Rejected new connection: maximum concurrent connections \
-               ({}) reached", conn_session.max_connections);
-            continue;
-          }
-          Err(err) => {
-            log::error!("Failed to accept new connection in daemon: {err}");
-            return Err(err);
-          }
-        };
-
-        let mut client_id = 1;
-        while active_connection_ids.contains(&client_id)
-              && client_id < conn_session.max_connections {
-          client_id += 1;
-        }
-
-        active_connection_ids.insert(client_id);
-        log::info!(
-          "Client (ID {}) connected (total active: {})",
-          client_id,
-          active_connection_ids.len()
-        );
-
-        let tx = conn_finished_tx.clone();
-        tokio::spawn(async move {
-          if let Err(err) = handle_connection(client_id, connection).await {
-            log::error!("Client (ID {client_id}) closed connection with error {err}");
-          }
-          let _ = tx.send(client_id).await;
-        });
-      }
-      Some(finished_client_id) = conn_finished_rx.recv() => {
-        active_connection_ids.remove(&finished_client_id);
-        log::info!(
-          "Client (ID {}) closed connection with daemon (total active left: {})",
-          finished_client_id,
-          active_connection_ids.len()
-        );
-      }
-    }
-  }
-
-  #[allow(unreachable_code)]
-  // This is unreachable because the loop is infinite and the only way to stop
-  // it is by receiving a termination signal for daemon by client. Monitoring
-  // the signal arrival is happening in the caller function.
-  Ok(())
-}
-
-async fn handle_connection(
-  client_id: u32,
-  mut connection: Connection,
+async fn logic(
+  network: NetworkHandle,
+  mut network_events_rx: mpsc::Receiver<NetEvent>,
+  mut client_requests_rx: mpsc::Receiver<ClientRequest>,
+  daemon_events_tx: mpsc::Sender<DaemonEvent>,
 ) -> Result<()> {
   loop {
-    let cmd = match connection.read_command().await {
-      Ok(cmd) => {
-        log::info!("Received command from client (ID {client_id}): {cmd:?}");
-        cmd
+    tokio::select! {
+      Some(request) = client_requests_rx.recv() => {
+        // Client sent a request; process it and send response back.
+        if let Some(response) = handle_request(&network, request).await? {
+          if let Err(err) = daemon_events_tx.send(response).await {
+            log::warn!("failed to send response to client (client disconnected?): {err}");
+            // Continue processing network events even if client isn't listening.
+          }
+        }
       }
-      Err(err) if matches!(err.kind(), ErrorKind::ClientAbortedConnection) => {
-        log::info!(
-          "Client (ID {client_id}) closed connection while daemon was waiting \
-           for action command (client process terminated): {err:?}"
-        );
+      Some(ev) = network_events_rx.recv() => {
+        // Unsolicited event from network (e.g., peer connected/disconnected, message arrived).
+        // Forward to client if still connected.
+        if let Err(err) = daemon_events_tx.send(DaemonEvent::from(ev)).await {
+          log::warn!("failed to send network event to client (client disconnected?): {err}");
+          // Continue processing network events even if client isn't listening.
+        }
+      }
+      else => {
         break;
-      }
-      Err(err) => {
-        log::error!(
-          "Failed to read action command from client (ID {client_id}) in daemon: {err}"
-        );
-        return Err(err);
-      }
-    };
-
-    // TODO: Make this call async.
-    match command_processor::process(&mut connection, client_id, &cmd).await {
-      Ok(()) => {}
-      Err(err) if matches!(err.kind(), ErrorKind::ClientAbortedConnection) => {
-        log::info!(
-          "Client (ID {client_id}) closed connection while daemon was writing \
-           response (client process terminated): {err:?}"
-        );
-        break;
-      }
-      Err(err) => {
-        log::error!("Client (ID {client_id}) command processor failed: {err}");
-        return Err(err);
       }
     }
   }
 
   Ok(())
+}
+
+async fn client_gateway(
+  mut session: ClientSession,
+  client_request_tx: mpsc::Sender<ClientRequest>,
+  mut daemon_events_rx: mpsc::Receiver<DaemonEvent>,
+) -> Result<()> {
+  loop {
+    session.accept_client().await.map_err(|err| {
+      log::error!("Failed to accept client connection: {err}");
+      Error::new(ErrorKind::ClientAcceptFailed, err)
+    })?;
+
+    log::info!("Client connected");
+
+    loop {
+      tokio::select! {
+        req = session.recv_client_request() => {
+          match req {
+            Ok(ClientRequest::Bye) => {
+              log::info!("client said 'Bye', ending session");
+              break;
+            }
+            Ok(request) => {
+              client_request_tx.send(request).await.map_err(|err| {
+                Error::other(format!("failed to forward client request to daemon: {err}"))
+              })?;
+            }
+            Err(err) => {
+              if err.kind() == ErrorKind::ClientAbortedConnection {
+                log::info!("client disconnected: {err}");
+                break;
+              }
+              log::error!("recv_client_request error, ending session: {err}");
+              return Err(Error::other(err));
+            }
+          }
+        }
+        event = daemon_events_rx.recv() => {
+          match event {
+            Some(event) => {
+              // Logic task sent a response; forward it to the client.
+              if let Err(err) = session.send_event_to_client(&event).await {
+                if err.kind() == ErrorKind::ClientAbortedConnection {
+                  log::info!("client disconnected while writing response: {err}");
+                  break;
+                }
+                log::error!("send_event_to_client error, ending session: {err}");
+                return Err(Error::other(err));
+              }
+            }
+            None => {
+              // Logic task dropped the sender (daemon is shutting down).
+              return Err(Error::other("daemon event channel closed unexpectedly"));
+            }
+          }
+        }
+      }
+    }
+
+    log::info!("Client disconnected; daemon continues running");
+  }
 }
 
 // == Helpers ==
 
-fn daemon_init_components() -> Result<(ConnectionsSession, SignalListener)> {
+async fn handle_request(
+  network: &NetworkHandle,
+  request: ClientRequest,
+) -> Result<Option<DaemonEvent>> {
+  match request {
+    ClientRequest::Bye => Ok(None),
+    ClientRequest::MyID => Ok(Some(DaemonEvent::MyId {
+      endpoint_id: network.my_ticket()?,
+    })),
+    ClientRequest::List => {
+      let peers = network.list_peers().await;
+      Ok(Some(DaemonEvent::PeerList { peers }))
+    }
+    ClientRequest::Connect { peer_id } => match network.connect(&peer_id).await {
+      Ok(connected_id) => Ok(Some(DaemonEvent::Ok {
+        info: format!("connected to {connected_id}"),
+      })),
+      Err(err) => Ok(Some(DaemonEvent::Error {
+        message: format!("failed to connect: {err}"),
+      })),
+    },
+    ClientRequest::Disconnect { peer_id } => {
+      match network.disconnect(&peer_id).await {
+        Ok(true) => Ok(Some(DaemonEvent::Ok {
+          info: format!("disconnected from {peer_id}"),
+        })),
+        Ok(false) => Ok(Some(DaemonEvent::Error {
+          message: format!("peer {peer_id} is not connected"),
+        })),
+        Err(err) => Ok(Some(DaemonEvent::Error {
+          message: format!("disconnect failed: {err}"),
+        })),
+      }
+    }
+    ClientRequest::Send { peer_id, message } => {
+      match network.send_message(&peer_id, &message).await {
+        Ok(()) => {
+          let timestamp_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+          Ok(Some(DaemonEvent::Ok {
+            info: format!("sent to {peer_id} at {}", format_timestamp(timestamp_secs)),
+          }))
+        }
+        Err(err) => Ok(Some(DaemonEvent::Error {
+          message: format!("send failed: {err}"),
+        })),
+      }
+    }
+    _ => Ok(Some(DaemonEvent::Error {
+      message: "unsupported request in this daemon version".to_owned(),
+    })),
+  }
+}
+
+fn format_timestamp(secs: i64) -> String {
+  use chrono::{TimeZone, Utc, Local};
+  
+  match Utc.timestamp_opt(secs, 0) {
+    chrono::LocalResult::Single(dt) => {
+      dt.with_timezone(&Local).format("%H:%M:%S").to_string()
+    },
+    chrono::LocalResult::Ambiguous(dt, _) => {
+      dt.with_timezone(&Local).format("%H:%M:%S").to_string()
+    },
+    chrono::LocalResult::None => "<invalid-time>".to_owned(),
+  }
+}
+
+async fn init_daemon_components() -> Result<(
+  ClientSession,
+  NetworkHandle,
+  mpsc::Receiver<NetEvent>,
+  SignalListener,
+)> {
   pid::create(&paths::daemon_pidfile(), &pid::this_proc_pid())
     .inspect_err(|err| {
       log::debug!(
-        "pid::create() in daemon_init_components() failed to create daemon PID file: {err:?}"
+        "init_daemon_components() failed to create daemon PID file: {err:?}"
       );
     })
-    .map_err(|err| Error::new(ErrorKind::PidFileCreationFailed, err))?;
+    .map_err(|err| {
+      Error::other(format!("failed to create daemon PID file: {err}"))
+    })?;
 
-  let session = ConnectionsSession::new(16).inspect_err(|err| {
-    log::debug!(
-      "ConnectionsSession::new() in daemon_init_components() failed to \
-       create daemon connection session: {err:?}"
-    );
-  })?;
+  log::debug!("Daemon PID file created at {}", paths::daemon_pidfile().display());
+
+  let session = ClientSession::new()
+    .inspect_err(|err| {
+      log::debug!("init_daemon_components() failed to create client connection listener: {err:?}");
+    })
+    .map_err(|err| Error::other(
+      format!("failed to create client connection listener: {err}"))
+    )?;
+
+  log::debug!("Daemon client connection listener created at {}", paths::daemon_socket().display());
+
+  let (network, net_events_rx) = NetworkHandle::new()
+    .await
+    .inspect_err(|err| {
+      log::debug!(
+        "init_daemon_components() failed to initialize networking stack: {err:?}"
+      );
+    })
+    .map_err(|err| {
+      Error::other(format!("failed to initialize networking stack: {err}"))
+    })?;
+
+  log::debug!("Daemon networking stack initialized successfully");
 
   let listener = signal(SignalKind::terminate())
     .inspect_err(|err| {
       log::debug!(
-        "tokio::signal::unix::signal() in daemon_init_components() failed to \
-         create daemon signal handler: {err:?}"
+        "init_daemon_components() failed to create daemon signal handler: {err:?}"
       );
     })
-    .map_err(|err| Error::new(ErrorKind::SignalHandlerFailed, err))?;
+    .map_err(|err| {
+      Error::other(format!("failed to create daemon signal handler: {err}"))
+    })?;
 
-  Ok((session, listener))
+  log::debug!("Daemon signal handler created successfully");
+
+  Ok((session, network, net_events_rx, listener))
 }

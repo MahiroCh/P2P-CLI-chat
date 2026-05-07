@@ -2,18 +2,23 @@
 
 mod error;
 
+use error::FrameTooLargeData;
 pub use error::{Error, ErrorKind};
-use error::{FrameTooLargeData, Result};
 
 use std::{fs, path::Path};
 use tokio::{
   io::{AsyncReadExt, AsyncWriteExt},
-  net::{UnixListener as TokioUnixListener, UnixStream as TokioUnixStream},
+  net::{
+    unix::{OwnedReadHalf, OwnedWriteHalf},
+    UnixListener as TokioUnixListener,
+  },
 };
 
-// == Socket file management ==
+type Result<T> = std::result::Result<T, Error>;
 
 pub const MAX_FRAME_BYTES: u32 = 64 * 1024;
+
+// == Socket file management ==
 
 pub fn create(path: &Path) -> Result<TokioUnixListener> {
   match cleanup(path) {
@@ -67,7 +72,7 @@ pub fn cleanup(path: &Path) -> Result<()> {
 
 // NOTE: This function is not cancel safe. It should only be called in contexts
 // NOTE: where is is guaranteed to complete.
-pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<()> {
+pub async fn write_data(writer: &mut OwnedWriteHalf, message: &str) -> Result<()> {
   let msg_as_bytes = message.as_bytes();
   let msg_byte_len = msg_as_bytes.len() as u32;
 
@@ -81,7 +86,7 @@ pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<(
     ));
   }
 
-  match socket.write_u32(msg_byte_len).await {
+  match writer.write_u32(msg_byte_len).await {
     Ok(()) => {}
     Err(source) if is_connection_abort_like(&source) => {
       return Err(Error::from(ErrorKind::ConnectionAborted));
@@ -91,7 +96,7 @@ pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<(
     }
   }
 
-  match socket.write_all(msg_as_bytes).await {
+  match writer.write_all(msg_as_bytes).await {
     Ok(()) => {}
     Err(source) if is_connection_abort_like(&source) => {
       return Err(Error::from(ErrorKind::ConnectionAborted));
@@ -106,8 +111,8 @@ pub async fn write_data(socket: &mut TokioUnixStream, message: &str) -> Result<(
 
 // NOTE: This function is not cancel safe. It should only be called in contexts
 // NOTE: where is is guaranteed to complete.
-pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String> {
-  let msg_byte_len = match socket.read_u32().await {
+pub async fn read_data(reader: &mut OwnedReadHalf) -> Result<String> {
+  let msg_byte_len = match reader.read_u32().await {
     Ok(len) => len,
     Err(source) if is_connection_abort_like(&source) => {
       return Err(Error::from(ErrorKind::ConnectionAborted));
@@ -128,7 +133,7 @@ pub async fn read_data(socket: &mut TokioUnixStream) -> Result<String> {
   }
 
   let mut msg_as_bytes = vec![0u8; msg_byte_len as usize];
-  match socket.read_exact(&mut msg_as_bytes).await {
+  match reader.read_exact(&mut msg_as_bytes).await {
     Ok(_) => {}
     Err(source) if is_connection_abort_like(&source) => {
       return Err(Error::from(ErrorKind::ConnectionAborted));

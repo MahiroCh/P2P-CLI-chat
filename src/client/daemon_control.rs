@@ -1,45 +1,55 @@
 //! Daemon control module: responsible for managing the lifecycle of the daemon
 //! process, including starting, stopping, and checking its status.
 
-mod session;
-
-use crate::client::{Error, ErrorKind, Result};
-use p2p_chat::{paths, pid, schemas::INTERNAL_DAEMON_INIT_FLAG, socket};
-pub(crate) use session::ConnectionSession;
+use crate::client::{Error, Result};
+use p2p_chat::{paths, pid, socket};
+use State::*;
 
 use nix::{sys::signal, unistd::Pid};
 
-pub(super) enum CreateRes {
-  Started,
-  Running,
+pub(super) enum State {
+  Running { pid: i32 },
+  NotRunning,
+  Corrupted(Error),
+  StateUnknown(Error),
+
+  ProcessCreated,
+  StopRequested,
 }
 
 // == Control functions for managing the daemon process ==
 
-pub(super) fn create() -> Result<CreateRes> {
+pub(super) fn create(daemon_log_level: &str) -> Result<State> {
   match status() {
-    Ok(Status::NotRunning) => { /* Continue running create() */ }
-    Ok(Status::Running { .. }) => return Ok(CreateRes::Running),
-    Err(err) if matches!(err.kind(), ErrorKind::DaemonStateUnknown) => {
-      log::debug!("status() inside create() failed to obtain daemon state: {err:?}");
-      return Err(err);
+    NotRunning => {}
+    Running { pid } => return Ok(Running { pid }),
+    Corrupted(err) | StateUnknown(err) => {
+      log::debug!(
+        "daemon::create() failed: status() reported a problem with daemon: {err:?}"
+      );
+      return Err(Error::other(err));
     }
-    Err(_) => unreachable!("other errors are not expected from the callee"),
+    _ => unreachable!("other states are not expected from the callee"),
   };
 
   // Get current binary path to spawn the same binary with a hidden flag
   // that triggers the real daemon initialization code.
-  let exe = std::env::current_exe().map_err(|err| {
-    log::debug!("current_exe() failed to get executable path: {err:?}");
-    Error::new(ErrorKind::DaemonStartFailed, err)
-  })?;
+  let exe = std::env::current_exe()
+    .inspect_err(|err| {
+      log::debug!("daemon::create() failed: current_exe() couldn't to get executable path: {err:?}");
+    })
+    .map_err(|err| Error::other(err))?;
 
   // Configure command to run the binary with the hidden flag. Redirect stdio to null
   // for daemon.
   let mut command = std::process::Command::new(exe);
   command
     // Trigger hidden flag to call real daemon.
-    .arg(format!("--{}", INTERNAL_DAEMON_INIT_FLAG))
+    .arg(format!(
+      "--{}",
+      p2p_chat::cli_interface::INTERNAL_DAEMON_INIT_FLAG
+    ))
+    .env("P2PCHAT_DAEMON_LOG_LEVEL", daemon_log_level)
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null());
@@ -59,53 +69,49 @@ pub(super) fn create() -> Result<CreateRes> {
   }
 
   // Run the spawn daemon process command.
-  let _ = command.spawn().map_err(|err| {
-    log::debug!("command.spawn() failed: {err:?}");
-    Error::new(ErrorKind::DaemonStartFailed, err)
-  })?;
+  let child = command
+    .spawn()
+    .inspect_err(|err| {
+      log::debug!("daemon::create() failed: command.spawn() failed: {err:?}");
+    })
+    .map_err(|err| Error::other(err))?;
 
-  Ok(CreateRes::Started)
+  log::info!(
+    "Daemon proccess spawned with PID {}. See daemon logs for details",
+    child.id()
+  );
+
+  Ok(ProcessCreated)
 }
 
-pub(super) enum DestroyRes {
-  Destroyed { pid: i32 },
-  NotRunning,
-}
-
-pub(super) fn destroy() -> Result<DestroyRes> {
+pub(super) fn destroy() -> Result<State> {
   let pid = match status() {
-    Ok(Status::Running { pid }) => pid,
-    Ok(Status::NotRunning) => return Ok(DestroyRes::NotRunning),
-    Err(err) if matches!(err.kind(), ErrorKind::DaemonStateUnknown) => {
-      log::debug!("status() inside destroy() failed to obtain daemon state");
-      return Err(err);
+    Running { pid } => pid,
+    NotRunning => return Ok(NotRunning),
+    Corrupted(err) | StateUnknown(err) => {
+      log::debug!(
+        "daemon::destroy() failed: status() reported a problem with daemon: {err:?}"
+      );
+      return Err(Error::other(err));
     }
-    Err(_) => unreachable!("other errors are not expected from the callee"),
+    _ => unreachable!("other states are not expected from the callee"),
   };
 
-  match signal::kill(Pid::from_raw(pid), signal::Signal::SIGTERM) {
-    Ok(()) => {
-      log::debug!("signal::kill() sent SIGTERM to daemon process with PID: {pid}")
-    }
-    Err(err) if err == nix::errno::Errno::EPERM => {
-      log::debug!("signal::kill() permission denied to stop daemon with PID: {pid}");
-      return Err(Error::new(ErrorKind::DaemonStopFailed, err));
-    }
-    Err(err) => {
-      log::debug!("signal::kill() failed to stop daemon with PID: {pid}: {err}");
-      return Err(Error::new(ErrorKind::DaemonStopFailed, err));
-    }
-  }
+  signal::kill(Pid::from_raw(pid), signal::Signal::SIGTERM)
+    .inspect(|_| {
+      log::debug!("daemon::destroy() sent SIGTERM to daemon process with PID {pid}")
+    })
+    .inspect_err(|err| {
+      log::debug!("daemon::destroy() failed to stop daemon with PID {pid}: {err:?}");
+    })
+    .map_err(|err| Error::other(err))?;
 
-  Ok(DestroyRes::Destroyed { pid })
+  log::info!("Daemon with PID {pid} was sent stop signal");
+
+  Ok(StopRequested)
 }
 
-pub(super) enum Status {
-  Running { pid: i32 },
-  NotRunning,
-}
-
-pub(super) fn status() -> Result<Status> {
+pub(super) fn status() -> State {
   let pid_fp = paths::daemon_pidfile();
   let mut pid: Option<i32> = None;
 
@@ -113,52 +119,53 @@ pub(super) fn status() -> Result<Status> {
     Ok(p) => {
       if is_process_alive(p) {
         pid = Some(p.into());
-        log::debug!("During status() run found live daemon process with PID: {p}");
+        log::debug!("status() found live daemon process with PID {p}");
       } else {
         log::debug!(
-          "During status() run found daemon PID file with PID {p}, but process \
+          "status() found daemon PID file with PID {p}, but process \
            is not alive, so starting cleanup procedure"
         );
         match pid::cleanup(&pid_fp) {
           Ok(()) => {}
-          Err(err) if matches!(err.kind(), pid::ErrorKind::RemovePidFile) => {
-            log::warn!(
-              "During cleanup found stale daemon PID-file (PID {p}), but \
-               failed to remove it. This may cause problems with future daemon \
-               creation attempts until the file is removed manually"
-            );
+          Err(err) => {
+            if err.kind() == pid::ErrorKind::RemovePidFile {
+              log::warn!(
+                "During cleanup found stale daemon PID-file (PID {p}), but \
+                 failed to remove it. This may cause problems with future daemon \
+                 creation attempts until the file is removed manually"
+              );
+            } else if err.kind() == pid::ErrorKind::RemoveParentDir {
+              log::warn!(
+                "During cleanup found stale daemon PID-file (PID {p}) and \
+                 removed it, but failed to remove parent directory. This may cause \
+                 problems with future daemon creation attempts until the file is \
+                 removed manually"
+              );
+            } else {
+              unreachable!("other errors are not expected from the callee");
+            }
           }
-          Err(err) if matches!(err.kind(), pid::ErrorKind::RemoveParentDir) => {
-            log::warn!(
-              "During cleanup found stale daemon PID-file (PID {p}) and \
-               removed it, but failed to remove parent directory. This may cause \
-               problems with future daemon creation attempts until the file is \
-               removed manually"
-            );
-          }
-          Err(_) => unreachable!("other errors are not expected from the callee"),
         }
       }
     }
-    Err(err) if matches!(err.kind(), pid::ErrorKind::PidFileNotFound) => {
-      log::debug!(
-        "During status() run pid::read() returned PidFileNotFound error,so \
-         assume daemon is not running and continue with the rest of status() function"
-      );
+    Err(err) => {
+      if err.kind() == pid::ErrorKind::PidFileNotFound {
+        log::debug!(
+          "status() didn't find PID file, so assume daemon is not running and \
+           continue with the rest of status() function"
+        );
+      } else if err.kind() == pid::ErrorKind::ReadFromPidFile
+        || err.kind() == pid::ErrorKind::InvalidPidFileContent
+      {
+        log::error!("Daemon status check could not determine state: {err}");
+        log::debug!(
+          "status() run pid::read() reported problem with daemon PID file: {err:?}"
+        );
+        return StateUnknown(Error::other(err));
+      } else {
+        unreachable!("other errors are not expected from the callee");
+      }
     }
-    Err(err) if matches!(err.kind(), pid::ErrorKind::ReadFromPidFile) => {
-      log::error!("Failed to read daemon PID file, daemon state is unknown");
-      log::debug!(
-        "During status() run pid::read() failed to read from PID file: {err:?}"
-      );
-      return Err(Error::new(ErrorKind::DaemonStateUnknown, err));
-    }
-    Err(err) if matches!(err.kind(), pid::ErrorKind::InvalidPidFileContent) => {
-      log::error!("Content of the daemon PID file is of invalid format, daemon state is unknown");
-      log::debug!("During status() run pid::read() returned InvalidPidFileContent error: {err:?}");
-      return Err(Error::new(ErrorKind::DaemonStateUnknown, err));
-    }
-    Err(_) => unreachable!("other errors are not expected from the callee"),
   }
 
   let socket_path = paths::daemon_socket();
@@ -166,7 +173,7 @@ pub(super) fn status() -> Result<Status> {
     true => {
       if let None = pid {
         log::debug!(
-          "During status() run found daemon socket file at expected path \
+          "status() found daemon socket file at expected path \
            but no live daemon process found, so starting cleanup procedure"
         );
         match socket::cleanup(&socket_path) {
@@ -175,44 +182,47 @@ pub(super) fn status() -> Result<Status> {
               "During cleanup found stale daemon socket file and removed it"
             );
           }
-          Err(err) if matches!(err.kind(), socket::ErrorKind::RemoveSocketFile) => {
-            log::warn!(
-              "During cleanup found stale daemon socket file, but \
-               failed to remove it. This may cause problems with future daemon \
-               creation attempts until the file is removed manually"
-            );
+          Err(err) => {
+            if err.kind() == socket::ErrorKind::RemoveSocketFile {
+              log::warn!(
+                "During cleanup found stale daemon socket file, but \
+                 failed to remove it. This may cause problems with future daemon \
+                 creation attempts until the file is removed manually"
+              );
+            } else if err.kind() == socket::ErrorKind::RemoveParentDir {
+              log::warn!(
+                "During cleanup found stale daemon socket file and removed it, but \
+                 failed to remove parent directory. This may cause problems with \
+                 future daemon creation attempts until the file is removed manually"
+              );
+            } else {
+              unreachable!("other errors are not expected from the callee");
+            }
           }
-          Err(err) if matches!(err.kind(), socket::ErrorKind::RemoveParentDir) => {
-            log::warn!(
-              "During cleanup found stale daemon socket file and removed it, but \
-               failed to remove parent directory. This may cause problems with \
-               future daemon creation attempts until the file is removed manually"
-            );
-          }
-          Err(_) => unreachable!("other errors are not expected from the callee"),
         }
       }
     }
     false => {
       if let Some(_) = pid {
         log::error!(
-          "Found live daemon process but no socket file at expected \
-           path which means that daemon is in corrupted state"
+          "Daemon status check reported corrupted state: found live daemon \
+           process but no socket file at expected path"
         );
         log::debug!(
-          "During status() run found daemon PID file with live process, but \
-           no socket file at expected path, so assume daemon is corrupted and \
-           return DaemonCorrupted error"
+          "status() found daemon PID file with live process, but \
+           no socket file at expected path {:?}, so assume daemon is corrupted",
+          paths::daemon_socket()
         );
-        // NOTE: Consider sending SIGTERM to the daemon.
-        return Err(Error::from(ErrorKind::DaemonCorrupted));
+        return Corrupted(Error::other(
+          "daemon process is alive but socket file is missing",
+        ));
       }
     }
   }
 
   match pid {
-    Some(pid) => Ok(Status::Running { pid }),
-    None => Ok(Status::NotRunning),
+    Some(pid) => Running { pid },
+    None => NotRunning,
   }
 }
 

@@ -2,11 +2,12 @@
 
 mod error;
 
-use error::Result;
-pub use error::{Error, ErrorKind};
+pub use error::*;
 
 use nix::unistd::Pid;
 use std::{fs, path::Path};
+
+type Result<T> = std::result::Result<T, Error>;
 
 // == PID file management ==
 

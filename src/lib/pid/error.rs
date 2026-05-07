@@ -1,10 +1,8 @@
 //! PID file management errors.
 
-define_error!();
+define_error!(Error, ErrorKind);
 
-// == Error kinds ==
-
-#[derive(thiserror::Error, Debug, Clone, Copy)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorKind {
   // Logical errors:
@@ -28,4 +26,7 @@ pub enum ErrorKind {
   RemovePidFile,
   #[error("failed to remove parent directory of PID file")]
   RemoveParentDir,
+
+  #[error("error")]
+  Other,
 }

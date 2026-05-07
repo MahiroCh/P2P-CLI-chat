@@ -2,35 +2,32 @@
 
 use p2p_chat::define_error;
 
-define_error!();
+define_error!(Error, ErrorKind);
 
-// == Error kinds ==
+impl Error {
+  pub fn other<E>(error: E) -> Self
+  where
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+  {
+    Self::new(ErrorKind::Other, error)
+  }
+}
 
 #[allow(dead_code)]
-#[derive(thiserror::Error, Debug, Clone, Copy)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorKind {
-  // Initialization errors.
-  #[error("failed to create PID file")]
-  PidFileCreationFailed,
-  #[error("failed to create socket file")]
-  SocketCreationFailed,
-  #[error("daemon signal handler failed to initialize")]
-  SignalHandlerFailed,
+  // Daemon initialization errors.
+  #[error("failed to initialize daemon components")]
+  DaemonInitFailed,
 
   // Connection errors.
   #[error("client aborted connection")]
   ClientAbortedConnection,
-  #[error("daemon failed to accept a connection")]
-  ConnectionAcceptFailed,
-  #[error("connection rejected: maximum concurrent connections reached")]
-  ConnectionAtCapacity,
+  #[error("failed to accept client connection")]
+  ClientAcceptFailed,
 
-  // Communication with client errors.
-  #[error("serde failed for action command")]
-  SerdeFailed,
-  #[error("daemon failed to read a command from client connection")]
-  ReadCommandFailed,
-  #[error("daemon failed to write a response to client connection")]
-  WriteResponseFailed,
+  // For specific custom errors.
+  #[error("error")]
+  Other,
 }

@@ -2,43 +2,42 @@
 
 use p2p_chat::define_error;
 
-define_error!();
+define_error!(Error, ErrorKind);
 
-// == Error kinds ==
+impl Error {
+  pub fn other<E>(error: E) -> Self
+  where
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+  {
+    Self::new(ErrorKind::Other, error)
+  }
+}
 
 #[allow(dead_code)]
-#[derive(thiserror::Error, Debug, Clone, Copy)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorKind {
-  // Daemon control errors.
-  #[error("failed to spawn separate daemon process")]
-  DaemonStartFailed,
-  #[error("failed to stop daemon for an unknown reason")]
-  DaemonStopFailed,
-  #[error("failed to obtain daemon state")]
-  DaemonStateUnknown,
-  #[error("daemon is corrupted")]
-  DaemonCorrupted,
-  #[error("daemon is not running but it is required")]
-  DaemonNotRunningButNeeded,
-
-  // Communication with daemon errors.
+  // Connection errors.
   #[error("daemon aborted connection")]
   DaemonAbortedConnection,
   #[error("failed to create session with daemon")]
   DaemonConnectionFailed,
-  #[error("daemon refused connection from client")]
-  DaemonRefusedConnection,
-  #[error("serde failed for action command")]
-  SerdeFailed,
-  #[error("failed to write action command to daemon")]
-  WriteCommandFailed,
-  #[error("failed to read daemon response")]
-  ReadResponseFailed,
+
+  // Communication with daemon errors.
+  #[error("failed to send command to daemon")]
+  SendCommandFailed,
+  #[error("failed to receive daemon response")]
+  ReceiveResponseFailed,
 
   // REPL errors.
-  #[error("repl input cannot be read or parsed into a valid command")]
-  ReplReadOrParseFailed,
-  #[error("failed to initialize REPL mode")]
+  #[error("repl initialization failed")]
   ReplInitFailed,
+  #[error("failed to parse input: shlex split error")]
+  ShlexFailed,
+  #[error("failed to parse input: clap parsing error")]
+  ClapFailed,
+
+  // For specific custom errors.
+  #[error("error")]
+  Other,
 }

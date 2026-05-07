@@ -19,6 +19,7 @@ use std::{env, path::PathBuf};
 
 const APP: &str = "p2pchat";
 const DAEMON_FILENAMES_BASE: &str = "daemon";
+const DAEMON_IROH_FILENAMES_BASE: &str = "daemon-iroh";
 const CLI_FILENAMES_BASE: &str = "cli";
 
 pub fn daemon_socket() -> PathBuf {
@@ -31,6 +32,10 @@ pub fn daemon_pidfile() -> PathBuf {
 
 pub fn daemon_log_file_spec() -> FileSpec {
   log_file_spec(DAEMON_FILENAMES_BASE)
+}
+
+pub fn daemon_iroh_log_file_spec() -> FileSpec {
+  log_file_spec(DAEMON_IROH_FILENAMES_BASE)
 }
 
 pub fn cli_log_file_spec() -> FileSpec {

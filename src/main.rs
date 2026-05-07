@@ -3,7 +3,7 @@
 mod client;
 mod daemon;
 
-use p2p_chat::schemas::Cli;
+use p2p_chat::cli_interface::Cli;
 
 use std::process::{ExitCode, Termination};
 
@@ -48,7 +48,7 @@ fn main() -> AppExitCode {
 
   // Runs the daemon (in case INTERNAL_DAEMON_INIT_FLAG hidden flag is set by
   // daemon::control::create() function). See cli schema for more info.
-  if input.init_internal {
+  if input.init_daemon_internal {
     match daemon::run() {
       Ok(_) => AppExitCode::Success,
       Err(_) => AppExitCode::Failure,
@@ -57,7 +57,7 @@ fn main() -> AppExitCode {
   // Run the client. If the internal flag is not set, command is required to be
   // present by the cli schema, so we can safely unwrap.
   else {
-    match client::run(input.command.unwrap()) {
+    match client::run(input.command.unwrap(), input.cli_log_level) {
       Ok(_) => AppExitCode::Success,
       Err(_) => AppExitCode::Failure,
     }
