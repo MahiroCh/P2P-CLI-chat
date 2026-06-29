@@ -1,10 +1,10 @@
-# p2p-chat
+# Sendout
 
-A minimal decentralized peer-to-peer chat application for Linux, written in Rust and powered by the [Iroh](https://www.iroh.computer/) library. It features a daemon-based architecture with an interactive REPL client for real-time messaging between peers.
+A minimal decentralized peer-to-peer chat application for Linux, written in Rust. It features a daemon-based architecture with an interactive REPL client for real-time messaging between peers.
 
 ## Overview
 
-**p2p-chat** solves the problem of establishing direct, peer-to-peer communication without relying on centralized servers. The project demonstrates:
+**Sendout** solves the problem of establishing direct, peer-to-peer communication without relying on centralized servers. The project demonstrates:
 
 - **What**: A working P2P messaging system that allows users to send messages directly to peers using ticket-based connection sharing
 - **Why**: To enable decentralized communication with full user control, privacy, and the ability to run without coordinating server after peers are connected
@@ -42,7 +42,7 @@ The application uses Iroh's robust connection and relay mechanisms, supporting b
 ### Building from Source
 
 ```bash
-git clone https://github.com/MahiroCh/P2P-CLI-chat.git
+git clone https://github.com/MahiroCh/Sendout.git
 cd p2p-chat
 cargo build --release
 ```
